@@ -1,0 +1,121 @@
+import { sendCall } from "../messageQueue.js";
+import { CStoCPAction, RemoteStartStopStatus } from "../ocppConstants.js";
+import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+
+/**
+ * RemoteStartTransaction Command
+ * 
+ * Sent by Central System to start a charging session remotely.
+ * 
+ * Request: {
+ *   connectorId?: number,
+ *   idTag: string,
+ *   chargingProfile?: ChargingProfile
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Rejected"
+ * }
+ */
+
+/**
+ * Send RemoteStartTransaction to a charger
+ * 
+ * @param {string} chargerId - Target charger ID
+ * @param {object} options - Command options
+ * @param {string} options.idTag - User identifier (RFID, userId, etc.)
+ * @param {number} options.connectorId - Specific connector (optional)
+ * @param {object} options.chargingProfile - Charging profile (optional)
+ * @returns {Promise<object>} Command result
+ */
+export async function remoteStartTransaction(chargerId, options) {
+  const { idTag, connectorId, chargingProfile } = options;
+
+  if (!idTag) {
+    throw new Error("idTag is required for RemoteStartTransaction");
+  }
+
+  // Check if charger is online
+  if (!isChargerOnline(chargerId)) {
+    return {
+      success: false,
+      status: "Offline",
+      error: "Charger is not connected",
+    };
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  // Build payload
+  const payload = {
+    idTag,
+  };
+
+  if (connectorId !== undefined) {
+    payload.connectorId = connectorId;
+  }
+
+  if (chargingProfile) {
+    payload.chargingProfile = chargingProfile;
+  }
+
+  try {
+    console.log(`[CMD] RemoteStartTransaction → ${chargerId} (idTag: ${idTag})`);
+
+    const response = await sendCall(
+      ws,
+      chargerId,
+      CStoCPAction.REMOTE_START_TRANSACTION,
+      payload,
+      { timeout: 30000 }
+    );
+
+    const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
+
+    console.log(`[CMD] RemoteStartTransaction ← ${chargerId}: ${response.status}`);
+
+    return {
+      success: accepted,
+      status: response.status,
+      chargerId,
+      idTag,
+      connectorId,
+    };
+  } catch (error) {
+    console.error(`[CMD] RemoteStartTransaction error for ${chargerId}:`, error.message);
+    return {
+      success: false,
+      status: "Error",
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Start charging for a user at a specific charger
+ * 
+ * High-level function that handles user lookup and starts charging
+ * 
+ * @param {object} params
+ * @param {string} params.chargerId - Charger ID
+ * @param {string} params.userId - User ID
+ * @param {number} params.connectorId - Connector ID (optional, defaults to 1)
+ * @returns {Promise<object>}
+ */
+export async function startChargingForUser(params) {
+  const { chargerId, userId, connectorId = 1 } = params;
+
+  // Use userId as idTag (or look up user's RFID tag)
+  const idTag = userId;
+
+  return remoteStartTransaction(chargerId, {
+    idTag,
+    connectorId,
+  });
+}
+
+export default {
+  remoteStartTransaction,
+  startChargingForUser,
+};
+

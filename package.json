@@ -1,0 +1,40 @@
+{
+  "name": "ev-central-system",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "worker": "node src/workers/graceWorker.js",
+    "worker:booking": "node src/workers/bookingWorker.js",
+    "worker:all": "node -e \"import('./src/workers/graceWorker.js').then(m => m.default()); import('./src/workers/bookingWorker.js').then(m => m.default());\"",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:generate": "prisma generate",
+    "db:seed": "node prisma/seed.js",
+    "db:seed:firebase": "node scripts/createFirebaseUsers.js",
+    "db:credentials": "node scripts/viewCredentials.js",
+    "db:reset": "prisma migrate reset --skip-seed"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.1",
+    "bullmq": "^5.34.0",
+    "cors": "^2.8.5",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^12.7.0",
+    "ioredis": "^5.4.1",
+    "prisma": "^6.19.1",
+    "uuid": "^9.0.1",
+    "ws": "^8.15.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2"
+  }
+}

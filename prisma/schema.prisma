@@ -1,0 +1,543 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id            String    @id @default(uuid())
+  firebaseUid   String    @unique
+  email         String?   @unique
+  phone         String?   @unique
+  name          String?
+  role          UserRole  @default(CONSUMER)
+  isActive      Boolean   @default(true)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  wallet        Wallet?
+  sessions      ChargingSession[]
+  bookings      Booking[]
+  ledgerEntries Ledger[]
+  
+  // Owner-specific
+  ownedStations Station[] @relation("StationOwner")
+
+  @@index([firebaseUid])
+  @@index([email])
+  @@index([role])
+}
+
+enum UserRole {
+  CONSUMER
+  OWNER
+  ADMIN
+}
+
+// ============================================
+// WALLET & LEDGER (FINTECH CORE)
+// ============================================
+
+model Wallet {
+  id            String    @id @default(uuid())
+  userId        String    @unique
+  balance       Decimal   @default(0) @db.Decimal(12, 2)
+  currency      String    @default("LKR")
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Optimistic locking for concurrency
+  version       Int       @default(0)
+  
+  user          User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Ledger {
+  id              String      @id @default(uuid())
+  
+  // User who owns this entry
+  userId          String
+  
+  // Entry type
+  type            LedgerType
+  
+  // Money amounts (always positive, direction determined by type)
+  amount          Decimal     @db.Decimal(12, 2)
+  
+  // Running balance AFTER this transaction
+  balanceAfter    Decimal     @db.Decimal(12, 2)
+  
+  // Reference IDs for traceability
+  referenceId     String?     // transactionId, paymentId, settlementId
+  referenceType   String?     // CHARGING_SESSION, PAYMENT, SETTLEMENT
+  
+  // Metadata
+  description     String?
+  metadata        Json?
+  
+  // Idempotency key to prevent duplicates
+  idempotencyKey  String      @unique
+  
+  // Immutable - only createdAt, no updatedAt
+  createdAt       DateTime    @default(now())
+  
+  user            User        @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([type])
+  @@index([referenceId])
+  @@index([createdAt])
+  @@index([idempotencyKey])
+}
+
+enum LedgerType {
+  TOP_UP              // Money added to wallet
+  CHARGE_DEBIT        // Deducted during charging
+  REFUND              // Money returned to user
+  OWNER_EARNING       // Station owner receives share
+  COMMISSION          // Platform commission taken
+  SETTLEMENT_PAYOUT   // Owner payout processed
+}
+
+// ============================================
+// PRICING & TARIFFS
+// ============================================
+
+model Pricing {
+  id              String    @id @default(uuid())
+  name            String
+  
+  // Price per kWh in base currency (LKR)
+  pricePerKwh     Decimal   @db.Decimal(10, 2)
+  
+  // Commission percentage (e.g., 2.00 = 2%) - Per SRS: 2%
+  commissionRate  Decimal   @default(2.00) @db.Decimal(5, 2)
+  
+  // Grace period in seconds before force stop
+  gracePeriodSec  Int       @default(60)
+  
+  // Low balance threshold for notification (in LKR)
+  lowBalanceThreshold Decimal @default(50.00) @db.Decimal(10, 2)
+  
+  // Active status
+  isDefault       Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Relation to stations using this pricing
+  stations        Station[]
+
+  @@index([isDefault])
+  @@index([isActive])
+}
+
+// ============================================
+// STATION & CHARGER HIERARCHY
+// ============================================
+
+model Station {
+  id              String    @id @default(uuid())
+  name            String
+  address         String
+  latitude        Decimal   @db.Decimal(10, 8)
+  longitude       Decimal   @db.Decimal(11, 8)
+  
+  // Owner
+  ownerId         String
+  
+  // Pricing
+  pricingId       String?
+  
+  // Booking settings
+  bookingEnabled  Boolean   @default(true)
+  
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  owner           User      @relation("StationOwner", fields: [ownerId], references: [id])
+  pricing         Pricing?  @relation(fields: [pricingId], references: [id])
+  chargers        Charger[]
+
+  @@index([ownerId])
+  @@index([latitude, longitude])
+}
+
+model Charger {
+  id              String    @id
+  serialNumber    String?   @unique  // Made optional for migration, will be required later
+  
+  // Station relation
+  stationId       String?
+  
+  // Hardware info from BootNotification
+  vendor          String?
+  model           String?
+  firmwareVersion String?
+
+  // Status
+  status          ChargerStatus @default(UNAVAILABLE)
+  connectionState ConnectionState @default(DISCONNECTED)
+  lastHeartbeat   DateTime?
+  lastSeen        DateTime?
+
+  // Metrics
+  totalEnergyWh   Int       @default(0)
+  
+  // Registration
+  isRegistered    Boolean   @default(false)
+  registeredAt    DateTime?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  station         Station?  @relation(fields: [stationId], references: [id])
+  connectors      Connector[]
+  sessions        ChargingSession[]
+
+  @@index([stationId])
+  @@index([serialNumber])
+  @@index([status])
+}
+
+enum ChargerStatus {
+  AVAILABLE
+  PREPARING
+  CHARGING
+  SUSPENDED_EV
+  SUSPENDED_EVSE
+  FINISHING
+  RESERVED
+  UNAVAILABLE
+  FAULTED
+}
+
+enum ConnectionState {
+  CONNECTED
+  DISCONNECTED
+}
+
+model Connector {
+  id              String    @id @default(uuid())
+  chargerId       String
+  connectorId     Int       // OCPP connector ID (1, 2, etc.)
+  
+  status          ConnectorStatus @default(AVAILABLE)
+  errorCode       String?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  charger         Charger   @relation(fields: [chargerId], references: [id])
+  sessions        ChargingSession[]
+  bookings        Booking[]
+
+  @@unique([chargerId, connectorId])
+  @@index([chargerId])
+}
+
+enum ConnectorStatus {
+  AVAILABLE
+  PREPARING
+  CHARGING
+  SUSPENDED_EV
+  SUSPENDED_EVSE
+  FINISHING
+  RESERVED
+  UNAVAILABLE
+  FAULTED
+}
+
+// ============================================
+// CHARGING SESSION
+// ============================================
+
+model ChargingSession {
+  id              Int       @id @default(autoincrement())
+  
+  // Unique transaction identifier
+  transactionId   String    @unique
+  
+  // Relations
+  chargerId       String
+  connectorId     String?
+  userId          String?
+  
+  // OCPP data
+  idTag           String?
+  
+  // Meter readings (in Wh)
+  meterStartWh    Int?
+  meterStopWh     Int?
+  
+  // Calculated values
+  energyUsedWh    Int       @default(0)
+  
+  // Billing
+  pricePerKwh     Decimal?  @db.Decimal(10, 2)
+  totalCost       Decimal   @default(0) @db.Decimal(12, 2)
+  ownerEarning    Decimal   @default(0) @db.Decimal(12, 2)
+  commission      Decimal   @default(0) @db.Decimal(12, 2)
+  
+  // Billing state
+  lastBilledWh    Int       @default(0)
+  
+  // Grace period tracking
+  graceStartedAt  DateTime?
+  gracePeriodSec  Int?
+  
+  // Stop reason
+  stopReason      StopReason?
+  
+  // Timestamps
+  startedAt       DateTime
+  endedAt         DateTime?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+
+  charger         Charger   @relation(fields: [chargerId], references: [id])
+  connector       Connector? @relation(fields: [connectorId], references: [id])
+  user            User?     @relation(fields: [userId], references: [id])
+
+  @@index([chargerId])
+  @@index([userId])
+  @@index([transactionId])
+  @@index([startedAt])
+}
+
+enum StopReason {
+  USER_REQUESTED
+  REMOTE_STOP
+  GRACE_EXPIRED
+  ZERO_BALANCE
+  CHARGER_FAULT
+  EMERGENCY_STOP
+  OTHER
+}
+
+// ============================================
+// BOOKING
+// ============================================
+
+model Booking {
+  id              String    @id @default(uuid())
+  
+  userId          String
+  connectorId     String
+  
+  // Booking time slot
+  startTime       DateTime
+  expiryTime      DateTime  // Grace period end
+  
+  // Status
+  status          BookingStatus @default(ACTIVE)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id])
+  connector       Connector @relation(fields: [connectorId], references: [id])
+
+  @@index([userId])
+  @@index([connectorId])
+  @@index([status])
+  @@index([startTime])
+}
+
+enum BookingStatus {
+  ACTIVE
+  USED
+  CANCELLED
+  EXPIRED
+}
+
+// ============================================
+// SETTLEMENT
+// ============================================
+
+model Settlement {
+  id              String    @id @default(uuid())
+  
+  // Owner who receives the settlement
+  ownerId         String
+  
+  // Period covered
+  periodStart     DateTime
+  periodEnd       DateTime
+  
+  // Amounts
+  totalEarnings   Decimal   @db.Decimal(12, 2)
+  totalCommission Decimal   @db.Decimal(12, 2)
+  netPayout       Decimal   @db.Decimal(12, 2)
+  
+  // Session count
+  sessionCount    Int       @default(0)
+  totalEnergyWh   Int       @default(0)
+  
+  // Status
+  status          SettlementStatus @default(PENDING)
+  paidAt          DateTime?
+  paidByAdminId   String?
+  
+  // Payment reference (bank transfer, check number, etc.)
+  paymentRef      String?
+  paymentMethod   String?
+  paymentNotes    String?   @db.Text
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // Line items
+  items           SettlementItem[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([periodStart, periodEnd])
+}
+
+enum SettlementStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+}
+
+// ============================================
+// GRACE PERIOD JOBS (for BullMQ tracking)
+// ============================================
+
+model GracePeriodJob {
+  id              String    @id @default(uuid())
+  
+  sessionId       Int       @unique
+  transactionId   String    @unique
+  userId          String
+  
+  // Job details
+  bullJobId       String?
+  expiresAt       DateTime
+  
+  // Status
+  status          GraceJobStatus @default(ACTIVE)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([transactionId])
+  @@index([expiresAt])
+  @@index([status])
+}
+
+enum GraceJobStatus {
+  ACTIVE
+  CANCELLED
+  EXECUTED
+}
+
+// ============================================
+// OCPP MESSAGE LOG (Audit Trail)
+// ============================================
+
+model OcppMessageLog {
+  id              String    @id @default(uuid())
+  
+  chargerId       String
+  
+  // Message details
+  direction       MessageDirection
+  messageType     Int       // 2=CALL, 3=CALLRESULT, 4=CALLERROR
+  messageId       String
+  action          String?
+  
+  // Payload (stored as JSON string for size efficiency)
+  payload         String    @db.Text
+  response        String?   @db.Text
+  
+  // Error info (if CALLERROR)
+  errorCode       String?
+  errorDescription String?
+  
+  // Timing
+  timestamp       DateTime  @default(now())
+  responseTime    Int?      // Response time in ms
+  
+  @@index([chargerId])
+  @@index([action])
+  @@index([timestamp])
+  @@index([messageId])
+}
+
+enum MessageDirection {
+  INCOMING    // CP → CS
+  OUTGOING    // CS → CP
+}
+
+// ============================================
+// SETTLEMENT DETAILS (Line Items)
+// ============================================
+
+model SettlementItem {
+  id              String    @id @default(uuid())
+  
+  settlementId    String
+  sessionId       Int
+  transactionId   String
+  
+  // Session details
+  energyWh        Int
+  grossAmount     Decimal   @db.Decimal(12, 2)
+  commission      Decimal   @db.Decimal(12, 2)
+  netAmount       Decimal   @db.Decimal(12, 2)
+  
+  sessionDate     DateTime
+  
+  createdAt       DateTime  @default(now())
+  
+  settlement      Settlement @relation(fields: [settlementId], references: [id])
+  
+  @@index([settlementId])
+  @@index([sessionId])
+}
+
+// ============================================
+// ADMIN AUDIT LOG
+// ============================================
+
+model AdminAuditLog {
+  id              String    @id @default(uuid())
+  
+  adminId         String
+  action          String    // CREATE_OWNER, REGISTER_CHARGER, etc.
+  targetType      String    // USER, CHARGER, STATION, SETTLEMENT
+  targetId        String
+  
+  // Change details
+  previousValue   Json?
+  newValue        Json?
+  
+  // Metadata
+  ipAddress       String?
+  userAgent       String?
+  
+  createdAt       DateTime  @default(now())
+  
+  @@index([adminId])
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
