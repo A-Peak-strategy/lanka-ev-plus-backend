@@ -1,4 +1,4 @@
-import { firebaseAdmin } from "../config/firebase.js";
+import admin  from "../config/firebase.js";
 import prisma from "../config/db.js";
 
 /**
@@ -24,7 +24,7 @@ export async function verifyToken(req, res, next) {
     const token = authHeader.split("Bearer ")[1];
     
     // Verify Firebase token
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const decodedToken = await admin.auth().verifyIdToken(token);
     
     // Get or create user in database
     let user = await prisma.user.findUnique({
@@ -88,7 +88,7 @@ export async function optionalAuth(req, res, next) {
     
     const token = authHeader.split("Bearer ")[1];
     
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const decodedToken = await admin.auth().verifyIdToken(token);
     
     const user = await prisma.user.findUnique({
       where: { firebaseUid: decodedToken.uid },

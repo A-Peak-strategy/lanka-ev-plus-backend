@@ -36,6 +36,7 @@ export async function createBooking(req, res, next) {
     }
 
     const { chargerId, connectorId, startTime, durationMinutes = 60 } = req.body;
+    console.log("Create booking request:", req.body);
 
     // Validate inputs
     if (!chargerId || !connectorId || !startTime) {
