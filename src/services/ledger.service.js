@@ -208,6 +208,8 @@ export async function createCompensatingEntry({
 /**
  * Record owner earning from a charging session
  * 
+ * Adds commission amount to station owner's wallet balance
+ * 
  * @param {object} params
  * @returns {Promise<object>} Ledger entry
  */
@@ -218,39 +220,81 @@ export async function recordOwnerEarning({
   sessionId,
   idempotencyKey,
 }) {
-  // Owners have internal balance tracked via ledger
-  // Get current running balance from last entry
-  const lastEntry = await prisma.ledger.findFirst({
-    where: { userId: ownerId },
-    orderBy: { createdAt: "desc" },
+  // Check for duplicate
+  const existing = await prisma.ledger.findUnique({
+    where: { idempotencyKey },
   });
 
-  const currentBalance = lastEntry
-    ? new Decimal(lastEntry.balanceAfter.toString())
-    : new Decimal(0);
-  
+  if (existing) {
+    return { entry: existing, duplicate: true };
+  }
+
   const earningAmount = new Decimal(amount);
-  const newBalance = currentBalance.plus(earningAmount);
 
-  const { entry, duplicate } = await createLedgerEntry({
-    userId: ownerId,
-    type: LedgerType.OWNER_EARNING,
-    amount: earningAmount.toFixed(2),
-    balanceAfter: newBalance.toFixed(2),
-    referenceId: transactionId,
-    referenceType: ReferenceType.CHARGING_SESSION,
-    description: `Earning from session ${sessionId}`,
-    idempotencyKey,
-    metadata: { sessionId, transactionId },
+  // Execute in transaction to update both wallet and ledger
+  const result = await prisma.$transaction(async (tx) => {
+    // Get or create owner wallet
+    let wallet = await tx.wallet.findUnique({
+      where: { userId: ownerId },
+    });
+
+    if (!wallet) {
+      wallet = await tx.wallet.create({
+        data: {
+          userId: ownerId,
+          balance: 0,
+          currency: "LKR",
+        },
+      });
+    }
+
+    const currentBalance = new Decimal(wallet.balance.toString());
+    const newBalance = currentBalance.plus(earningAmount);
+
+    // Update owner wallet
+    const updatedWallet = await tx.wallet.update({
+      where: {
+        userId: ownerId,
+        version: wallet.version,
+      },
+      data: {
+        balance: newBalance.toFixed(2),
+        version: { increment: 1 },
+      },
+    });
+
+    // Create ledger entry
+    const entry = await tx.ledger.create({
+      data: {
+        userId: ownerId,
+        type: LedgerType.OWNER_EARNING,
+        amount: earningAmount.toFixed(2),
+        balanceAfter: newBalance.toFixed(2),
+        referenceId: transactionId,
+        referenceType: ReferenceType.CHARGING_SESSION,
+        description: `Earning from session ${sessionId}`,
+        idempotencyKey,
+        metadata: { sessionId, transactionId },
+      },
+    });
+
+    return { entry, wallet: updatedWallet };
   });
 
-  return { entry, duplicate };
+  return { entry: result.entry, duplicate: false };
 }
 
 /**
  * Record commission taken by platform
  * 
+ * Deducts commission amount from admin wallet balance
+ * 
  * @param {object} params
+ * @param {string} params.ownerId - Station owner ID (for reference)
+ * @param {string} params.amount - Commission amount
+ * @param {string} params.transactionId - Transaction ID
+ * @param {number} params.sessionId - Session ID
+ * @param {string} params.idempotencyKey - Idempotency key
  * @returns {Promise<object>} Ledger entry
  */
 export async function recordCommission({
@@ -260,33 +304,88 @@ export async function recordCommission({
   sessionId,
   idempotencyKey,
 }) {
-  // Commission is recorded against owner as a deduction
-  const lastEntry = await prisma.ledger.findFirst({
-    where: { userId: ownerId },
-    orderBy: { createdAt: "desc" },
+  // Check for duplicate
+  const existing = await prisma.ledger.findUnique({
+    where: { idempotencyKey },
   });
 
-  const currentBalance = lastEntry
-    ? new Decimal(lastEntry.balanceAfter.toString())
-    : new Decimal(0);
-  
+  if (existing) {
+    return { entry: existing, duplicate: true };
+  }
+
+  // Get admin user ID
+  const admin = await prisma.user.findFirst({
+    where: { role: "ADMIN", isActive: true },
+  });
+
+  if (!admin) {
+    throw new Error("Admin user not found");
+  }
+
+  const adminUserId = admin.id;
   const commissionAmount = new Decimal(amount);
-  // Commission reduces the owner's pending balance
-  const newBalance = currentBalance.minus(commissionAmount);
 
-  const { entry, duplicate } = await createLedgerEntry({
-    userId: ownerId,
-    type: LedgerType.COMMISSION,
-    amount: commissionAmount.toFixed(2),
-    balanceAfter: newBalance.toFixed(2),
-    referenceId: transactionId,
-    referenceType: ReferenceType.CHARGING_SESSION,
-    description: `Platform commission for session ${sessionId}`,
-    idempotencyKey,
-    metadata: { sessionId, transactionId },
+  // Execute in transaction to update both wallet and ledger
+  const result = await prisma.$transaction(async (tx) => {
+    // Get or create admin wallet
+    let adminWallet = await tx.wallet.findUnique({
+      where: { userId: adminUserId },
+    });
+
+    if (!adminWallet) {
+      adminWallet = await tx.wallet.create({
+        data: {
+          userId: adminUserId,
+          balance: 0,
+          currency: "LKR",
+        },
+      });
+    }
+
+    const currentBalance = new Decimal(adminWallet.balance.toString());
+    
+    // Check if admin has sufficient balance (should always have, but safety check)
+    if (currentBalance.lt(commissionAmount)) {
+      throw new Error(`Insufficient admin balance: ${currentBalance.toFixed(2)} < ${commissionAmount.toFixed(2)}`);
+    }
+
+    const newBalance = currentBalance.minus(commissionAmount);
+
+    // Update admin wallet (deduct commission)
+    const updatedAdminWallet = await tx.wallet.update({
+      where: {
+        userId: adminUserId,
+        version: adminWallet.version,
+      },
+      data: {
+        balance: newBalance.toFixed(2),
+        version: { increment: 1 },
+      },
+    });
+
+    // Create ledger entry for admin (commission deduction)
+    const entry = await tx.ledger.create({
+      data: {
+        userId: adminUserId,
+        type: LedgerType.COMMISSION,
+        amount: commissionAmount.toFixed(2),
+        balanceAfter: newBalance.toFixed(2),
+        referenceId: transactionId,
+        referenceType: ReferenceType.CHARGING_SESSION,
+        description: `Platform commission for session ${sessionId} (owner: ${ownerId})`,
+        idempotencyKey,
+        metadata: { 
+          sessionId, 
+          transactionId,
+          ownerId,
+        },
+      },
+    });
+
+    return { entry, wallet: updatedAdminWallet };
   });
 
-  return { entry, duplicate };
+  return { entry: result.entry, duplicate: false };
 }
 
 /**

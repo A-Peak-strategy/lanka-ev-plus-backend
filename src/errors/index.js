@@ -135,8 +135,16 @@ export class WalletError extends AppError {
 
 export class InsufficientBalanceError extends WalletError {
   constructor(required, available) {
+    const requiredDec = typeof required === "string" ? parseFloat(required) : required;
+    const availableDec = typeof available === "string" ? parseFloat(available) : available;
     super("Insufficient wallet balance", "INSUFFICIENT_BALANCE");
-    this.metadata = { required, available, shortfall: required - available };
+    this.currentBalance = availableDec.toString();
+    this.requiredAmount = requiredDec.toString();
+    this.metadata = { 
+      required: requiredDec.toString(), 
+      available: availableDec.toString(), 
+      shortfall: (requiredDec - availableDec).toFixed(2)
+    };
   }
 }
 

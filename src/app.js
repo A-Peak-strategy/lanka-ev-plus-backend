@@ -5,6 +5,7 @@ import chargerRoutes from "./api/charger.routes.js";
 import walletRoutes from "./api/wallet.routes.js";
 import bookingRoutes from "./api/booking.routes.js";
 import adminRoutes from "./api/admin.routes.js";
+import paymentRoutes from "./api/payment.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
 
 const app = express();
@@ -100,6 +101,7 @@ app.get("/health/detailed", async (req, res) => {
 app.use("/api/chargers", chargerRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/bookings", bookingRoutes);
+app.use("/api/payments", paymentRoutes);
 app.use("/api", adminRoutes);
 
 // ============================================

@@ -8,6 +8,7 @@ import billingService from "../../services/billing.service.js";
 import bookingService from "../../services/booking.service.js";
 import connectorLockService from "../../services/connectorLock.service.js";
 import prisma from "../../config/db.js";
+import Decimal from "decimal.js";
 
 /**
  * OCPP StartTransaction Handler
@@ -272,8 +273,35 @@ async function checkUserAuthorization(idTag) {
     };
   }
 
-  // Check wallet balance (optional - allow starting with low balance)
-  // Billing will handle low balance during session
+  // Check wallet balance - user cannot proceed if balance is 0
+  const wallet = user.wallet || await prisma.wallet.findUnique({
+    where: { userId: user.id },
+  });
+
+  if (!wallet) {
+    // Create wallet if it doesn't exist
+    await prisma.wallet.create({
+      data: {
+        userId: user.id,
+        balance: 0,
+        currency: "LKR",
+      },
+    });
+    return {
+      status: AuthorizationStatus.BLOCKED,
+      reason: "Insufficient wallet balance. Please top up your wallet.",
+    };
+  }
+
+  const balance = new Decimal(wallet.balance.toString());
+  
+  // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
+  if (balance.lte(0)) {
+    return {
+      status: AuthorizationStatus.BLOCKED,
+      reason: "Insufficient wallet balance. Please top up your wallet.",
+    };
+  }
 
   return {
     status: AuthorizationStatus.ACCEPTED,
