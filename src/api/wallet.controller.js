@@ -55,8 +55,7 @@ export async function getWallet(req, res) {
  */
 export async function topUpWallet(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user?.id ;
     const { 
       amount, 
       email, 
@@ -68,32 +67,34 @@ export async function topUpWallet(req, res) {
       country 
     } = req.body;
 
+    console.log("Wallet top Up request body : ", JSON.stringify(req.body, null, 2));
+
     // Validation
     if (!userId) {
       return res.status(401).json({ 
         success: false,
-        error: "User ID required" 
+        message: "User ID required" 
       });
     }
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ 
         success: false,
-        error: "Valid amount is required (must be greater than 0)" 
+        message: "Valid amount is required (must be greater than 0)" 
       });
     }
 
     if (!email) {
       return res.status(400).json({ 
         success: false,
-        error: "Email is required" 
+        message: "Email is required" 
       });
     }
 
     if (!phone) {
       return res.status(400).json({ 
         success: false,
-        error: "Phone number is required" 
+        message: "Phone number is required" 
       });
     }
 
@@ -111,7 +112,7 @@ export async function topUpWallet(req, res) {
     if (!user) {
       return res.status(404).json({ 
         success: false,
-        error: "User not found" 
+        message: "User not found" 
       });
     }
 

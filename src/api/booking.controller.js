@@ -15,6 +15,8 @@ import {
   validateUUID 
 } from "../utils/validation.js";
 
+import { DateTime } from "luxon";
+
 /**
  * Create a new booking
  * 
@@ -306,3 +308,41 @@ function generateAvailableSlots(startDate, hoursAhead, existingBookings) {
 
   return slots;
 }
+
+
+
+// function generateAvailableSlots(startDate, hoursAhead, existingBookings) {
+//   const slots = [];
+
+//   // Sri Lanka time
+//   let current = DateTime
+//     .fromJSDate(startDate)
+//     .setZone("Asia/Colombo")
+//     .startOf("hour");
+
+//   const end = current.plus({ hours: hoursAhead });
+
+//   while (current < end) {
+//     const slotStart = current;
+//     const slotEnd = current.plus({ hours: 1 });
+
+//     const isBooked = existingBookings.some(b => {
+//       const bookingStart = DateTime.fromJSDate(b.startTime).setZone("Asia/Colombo");
+//       const bookingEnd = DateTime.fromJSDate(b.expiryTime).setZone("Asia/Colombo");
+//       return slotStart < bookingEnd && slotEnd > bookingStart;
+//     });
+
+//     if (!isBooked && slotStart > DateTime.now().setZone("Asia/Colombo")) {
+//       slots.push({
+//         startTime: slotStart.toISO(),
+//         endTime: slotEnd.toISO(),
+//         available: true,
+//       });
+//     }
+
+//     current = current.plus({ hours: 1 });
+//   }
+
+//   return slots;
+// }
+
