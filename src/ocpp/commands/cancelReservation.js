@@ -41,7 +41,7 @@ export async function cancelReservation(chargerId, reservationId) {
   const ws = getChargerConnection(chargerId);
 
   try {
-    console.log(`[CMD] CancelReservation → ${chargerId} (resId: ${reservationId})`);
+    console.log(`[CMD] CancelReservation 1 → ${chargerId} (resId: ${reservationId})`);
 
     const response = await sendCall(
       ws,
@@ -51,9 +51,11 @@ export async function cancelReservation(chargerId, reservationId) {
       { timeout: 30000 }
     );
 
+    console.log("Response form the ocpp charger when cancel booking", response);
+
     const accepted = response.status === CancelReservationStatus.ACCEPTED;
 
-    console.log(`[CMD] CancelReservation ← ${chargerId}: ${response.status}`);
+    console.log(`[CMD] CancelReservation 2 ← ${chargerId}: ${response.status}`);
 
     return {
       success: accepted,
