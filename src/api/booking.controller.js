@@ -29,7 +29,8 @@ import {
 export async function createBooking(req, res, next) {
   try {
     // Get userId from auth (or request body for testing)
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
       throw new AuthenticationError("User authentication required");
@@ -103,7 +104,7 @@ export async function createBooking(req, res, next) {
  */
 export async function cancelBooking(req, res, next) {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user?.id;
     const { bookingId } = req.params;
 
     if (!userId) {
@@ -132,7 +133,7 @@ export async function cancelBooking(req, res, next) {
  */
 export async function getUserBookings(req, res, next) {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user?.id;
     const { status, limit = 20, offset = 0 } = req.query;
 
     if (!userId) {

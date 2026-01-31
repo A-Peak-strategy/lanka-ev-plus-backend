@@ -4,7 +4,8 @@ import {
   topUpWallet,
   getTransactions,
 } from "./wallet.controller.js";
-// import { authMiddleware } from "../middleware/auth.middleware.js";
+
+import { requireActiveUser, verifyToken } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
@@ -12,13 +13,13 @@ const router = express.Router();
 // router.use(authMiddleware);
 
 // GET /api/wallet - Get current wallet balance
-router.get("/", getWallet);
+router.get("/", verifyToken, requireActiveUser, getWallet);
 
 // POST /api/wallet/topup - Top up wallet
-router.post("/topup", topUpWallet);
+router.post("/topup",verifyToken, requireActiveUser, topUpWallet);
 
 // GET /api/wallet/transactions - Get transaction history
-router.get("/transactions", getTransactions);
+router.get("/transactions",verifyToken, requireActiveUser, getTransactions);
 
 export default router;
 

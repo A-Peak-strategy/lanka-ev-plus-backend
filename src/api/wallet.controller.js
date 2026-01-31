@@ -2,6 +2,7 @@ import walletService from "../services/wallet.service.js";
 import billingService from "../services/billing.service.js";
 import notificationService from "../services/notification.service.js";
 import { v4 as uuidv4 } from "uuid";
+import { AuthenticationError } from "../errors/index.js";
 
 /**
  * Get user's wallet
@@ -10,11 +11,12 @@ import { v4 as uuidv4 } from "uuid";
  */
 export async function getWallet(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.query.userId;
+
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
-      return res.status(401).json({ error: "User ID required" });
+      throw new AuthenticationError("User authentication required");
     }
 
     const wallet = await walletService.getOrCreateWallet(userId);
@@ -46,12 +48,14 @@ export async function getWallet(req, res) {
  */
 export async function topUpWallet(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
+
+    
     const { amount, paymentId, idempotencyKey } = req.body;
 
     if (!userId) {
-      return res.status(401).json({ error: "User ID required" });
+      throw new AuthenticationError("User authentication required");
     }
 
     if (!amount || amount <= 0) {
@@ -115,13 +119,13 @@ export async function topUpWallet(req, res) {
  */
 export async function getTransactions(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.query.userId;
-    const { limit = 50, offset = 0, type } = req.query;
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
-      return res.status(401).json({ error: "User ID required" });
+      throw new AuthenticationError("User authentication required");
     }
+    const { limit = 50, offset = 0, type } = req.query;
 
     const transactions = await walletService.getTransactionHistory(userId, {
       limit: parseInt(limit),
