@@ -26,6 +26,9 @@ import prisma from "../../config/db.js";
  * @returns {Promise<object>} Command result
  */
 export async function remoteStopTransaction(chargerId, transactionId) {
+
+
+
   if (!transactionId) {
     throw new Error("transactionId is required for RemoteStopTransaction");
   }
@@ -57,6 +60,8 @@ export async function remoteStopTransaction(chargerId, transactionId) {
       { transactionId: txId },
       { timeout: 30000 }
     );
+
+    console.log("Response from the charger : >>>>>>>>>>>>>>>>>>>>>>>>>", response);
 
     const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
 

@@ -234,6 +234,7 @@ export const stopCharging = async (req, res, next) => {
 
     // Send RemoteStopTransaction
     const result = await stopChargingAtCharger(chargerId);
+    console.log("Stop Charging result : ", JSON.stringify(result, null, 2));
 
     if (result.success) {
       res.json({
