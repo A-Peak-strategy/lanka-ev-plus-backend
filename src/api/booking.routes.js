@@ -6,6 +6,7 @@ import {
   getBookingDetails,
   getConnectorAvailability,
 } from "./booking.controller.js";
+import { requireActiveUser, verifyToken } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
@@ -13,16 +14,16 @@ const router = express.Router();
 // router.use(authMiddleware);
 
 // POST /api/bookings - Create a new booking
-router.post("/", createBooking);
+router.post("/", verifyToken, requireActiveUser,  createBooking);
 
 // GET /api/bookings - Get user's bookings
-router.get("/", getUserBookings);
+router.get("/",verifyToken, requireActiveUser, getUserBookings);
 
 // GET /api/bookings/:bookingId - Get booking details
 router.get("/:bookingId", getBookingDetails);
 
 // DELETE /api/bookings/:bookingId - Cancel a booking
-router.delete("/:bookingId", cancelBooking);
+router.delete("/:bookingId",verifyToken, requireActiveUser, cancelBooking);
 
 // GET /api/bookings/availability/:chargerId/:connectorId - Check connector availability
 router.get("/availability/:chargerId/:connectorId", getConnectorAvailability);

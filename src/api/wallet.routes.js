@@ -10,22 +10,24 @@ import {
 // import { authMiddleware } from "../middleware/auth.middleware.js";
 // import { requireAdmin } from "../middleware/auth.middleware.js";
 
+import { requireActiveUser, verifyToken } from "../middleware/auth.middleware.js";
+
 const router = express.Router();
 
 // All wallet routes require authentication
 // router.use(authMiddleware);
 
 // GET /api/wallet - Get current wallet balance
-router.get("/", getWallet);
+router.get("/", verifyToken, requireActiveUser, getWallet);
 
 // POST /api/wallet/topup - Top up wallet
-router.post("/topup", topUpWallet);
+router.post("/topup",verifyToken, requireActiveUser, topUpWallet);
 
 // POST /api/wallet/release-charging - Release charging amount
 router.post("/release-charging", releaseChargingAmount);
 
 // GET /api/wallet/transactions - Get transaction history
-router.get("/transactions", getTransactions);
+router.get("/transactions",verifyToken, requireActiveUser, getTransactions);
 
 // GET /api/wallet/all - Get all wallets (admin only)
 // router.get("/all", requireAdmin, getAllWallets);

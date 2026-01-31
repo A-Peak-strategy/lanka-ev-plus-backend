@@ -4,6 +4,7 @@ import notificationService from "../services/notification.service.js";
 import payhereService from "../services/payhere.service.js";
 import { v4 as uuidv4 } from "uuid";
 import prisma from "../config/db.js";
+import { AuthenticationError } from "../errors/index.js";
 
 /**
  * Get user's wallet
@@ -12,11 +13,12 @@ import prisma from "../config/db.js";
  */
 export async function getWallet(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.query.userId;
+
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
-      return res.status(401).json({ error: "User ID required" });
+      throw new AuthenticationError("User authentication required");
     }
 
     const wallet = await walletService.getOrCreateWallet(userId);
@@ -172,13 +174,13 @@ export async function topUpWallet(req, res) {
  */
 export async function getTransactions(req, res) {
   try {
-    // TODO: Get userId from Firebase auth middleware
-    const userId = req.user?.id || req.query.userId;
-    const { limit = 50, offset = 0, type } = req.query;
+    const userId = req.user?.id;
+    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
-      return res.status(401).json({ error: "User ID required" });
+      throw new AuthenticationError("User authentication required");
     }
+    const { limit = 50, offset = 0, type } = req.query;
 
     const transactions = await walletService.getTransactionHistory(userId, {
       limit: parseInt(limit),
