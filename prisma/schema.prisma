@@ -28,6 +28,7 @@ model User {
   sessions      ChargingSession[]
   bookings      Booking[]
   ledgerEntries Ledger[]
+  payments      Payment[]
   
   // Owner-specific
   ownedStations Station[] @relation("StationOwner")
@@ -540,4 +541,74 @@ model AdminAuditLog {
   @@index([action])
   @@index([targetType, targetId])
   @@index([createdAt])
+}
+
+// ============================================
+// PAYMENT PROCESSING
+// ============================================
+
+model Payment {
+  id                String      @id @default(uuid())
+  
+  // User who made the payment
+  userId            String
+  
+  // PayHere payment details
+  orderId           String      @unique  // PayHere order_id
+  merchantId        String
+  amount            Decimal     @db.Decimal(12, 2)
+  currency          String      @default("LKR")
+  
+  // Payment status
+  status            PaymentStatus @default(PENDING)
+  
+  // PayHere transaction details
+  payherePaymentId  String?     // PayHere payment_id (after payment)
+  payhereAmount     Decimal?    @db.Decimal(12, 2)
+  payhereCurrency   String?
+  
+  // Customer details (for PayHere)
+  firstName         String?
+  lastName          String?
+  email             String?
+  phone             String?
+  address           String?
+  city              String?
+  country           String?    @default("Sri Lanka")
+  
+  // Payment metadata
+  items             String?     // Description of items
+  hash              String?     // MD5 hash for verification
+  
+  // Webhook data
+  webhookData       Json?       // Store full webhook payload
+  webhookReceivedAt DateTime?
+  
+  // Status tracking
+  statusCode        String?     // PayHere status_code
+  statusMessage     String?
+  
+  // Timestamps
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  completedAt       DateTime?
+  
+  // Relations
+  user              User        @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+  @@index([payherePaymentId])
+  @@index([createdAt])
+}
+
+enum PaymentStatus {
+  PENDING           // Payment initiated, waiting for user
+  PROCESSING        // Payment in progress
+  SUCCESS           // Payment successful
+  FAILED            // Payment failed
+  CANCELLED         // User cancelled payment
+  EXPIRED           // Payment expired
+  REFUNDED          // Payment refunded
 }
