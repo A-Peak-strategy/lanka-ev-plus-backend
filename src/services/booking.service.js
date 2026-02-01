@@ -19,7 +19,7 @@ import {
 
 /**
  * Booking Service
- * 
+ *
  * Implements SRS booking requirements:
  * - Optional booking (walk-in allowed)
  * - Fixed start time with flexible duration
@@ -32,17 +32,17 @@ import {
 
 // Default configuration (can be overridden per station)
 const DEFAULT_CONFIG = {
-  gracePeriodMinutes: 15,      // Time to arrive after start time
-  maxBookingHours: 24,          // Maximum advance booking
-  minBookingMinutes: 15,        // Minimum booking duration
-  maxBookingMinutes: 180,       // Maximum booking duration (3 hours)
-  noShowPenaltyAmount: 100,     // LKR penalty for no-show
-  noShowPenaltyEnabled: true,   // Whether to charge penalty
+  gracePeriodMinutes: 15, // Time to arrive after start time
+  maxBookingHours: 24, // Maximum advance booking
+  minBookingMinutes: 15, // Minimum booking duration
+  maxBookingMinutes: 180, // Maximum booking duration (3 hours)
+  noShowPenaltyAmount: 100, // LKR penalty for no-show
+  noShowPenaltyEnabled: true, // Whether to charge penalty
 };
 
 /**
  * Create a new booking
- * 
+ *
  * @param {object} params
  * @param {string} params.userId - User making the booking
  * @param {string} params.connectorId - Connector DB ID
@@ -51,12 +51,7 @@ const DEFAULT_CONFIG = {
  * @returns {Promise<object>} Booking result
  */
 export async function createBooking(params) {
-  const {
-    userId,
-    connectorId,
-    startTime,
-    durationMinutes = 60,
-  } = params;
+  const { userId, connectorId, startTime, durationMinutes = 60 } = params;
 
   // Get connector with charger and station info
   const connector = await prisma.connector.findUnique({
@@ -81,7 +76,10 @@ export async function createBooking(params) {
     };
   }
 
-  const { charger, charger: { station } } = connector;
+  const {
+    charger,
+    charger: { station },
+  } = connector;
 
   // Check if booking is enabled for this station
   if (station && !station.bookingEnabled) {
@@ -105,7 +103,7 @@ export async function createBooking(params) {
     charger.id,
     connector.connectorId,
     new Date(startTime),
-    durationMinutes
+    durationMinutes,
   );
 
   if (!availability.available) {
@@ -117,7 +115,11 @@ export async function createBooking(params) {
   }
 
   // Check user doesn't have conflicting bookings
-  const userConflict = await checkUserConflictingBookings(userId, startTime, durationMinutes);
+  const userConflict = await checkUserConflictingBookings(
+    userId,
+    startTime,
+    durationMinutes,
+  );
   if (userConflict) {
     return {
       success: false,
@@ -126,10 +128,12 @@ export async function createBooking(params) {
     };
   }
 
-  // Calculate expiry time (start + grace period)
+  // Calculate expiry time (start + duration + grace period)
   const config = getStationConfig(station);
-  const expiryTime = new Date(startTime);
-  expiryTime.setMinutes(expiryTime.getMinutes() + config.gracePeriodMinutes);
+  const expiryTime = new Date(
+    new Date(startTime).getTime() +
+      (durationMinutes + config.gracePeriodMinutes) * 60 * 1000,
+  );
 
   // Create booking in database
   const booking = await prisma.booking.create({
@@ -168,17 +172,24 @@ export async function createBooking(params) {
 
     return {
       success: false,
-      error: "Failed to reserve time slot - may have been booked by another user",
+      error:
+        "Failed to reserve time slot - may have been booked by another user",
     };
   }
 
   // Send OCPP ReserveNow to charger (if online and start time is soon)
-  const minutesUntilStart = (new Date(startTime).getTime() - Date.now()) / 60000;
+  const minutesUntilStart =
+    (new Date(startTime).getTime() - Date.now()) / 60000;
   let ocppReservation = null;
 
   if (isChargerOnline(charger.id) && minutesUntilStart <= 30) {
     // Reserve immediately if booking is within 30 minutes
-    ocppReservation = await sendOcppReservation(booking, charger.id, connector.connectorId, expiryTime);
+    ocppReservation = await sendOcppReservation(
+      booking,
+      charger.id,
+      connector.connectorId,
+      expiryTime,
+    );
   }
 
   // Schedule booking expiry job
@@ -208,9 +219,9 @@ export async function createBooking(params) {
 
 /**
  * Cancel a booking
- * 
+ *
  * Free cancellation as per SRS
- * 
+ *
  * @param {string} bookingId
  * @param {string} userId - Must be the booking owner
  * @returns {Promise<object>}
@@ -251,15 +262,17 @@ export async function cancelBooking(bookingId, userId) {
     booking.connector.connectorId,
     bookingId,
     booking.startTime,
-    60 // Assume 1 hour, actual slots will be cleaned up
+    60, // Assume 1 hour, actual slots will be cleaned up
   );
 
   // Cancel OCPP reservation on charger
   if (isChargerOnline(booking.connector.chargerId)) {
     const reservationId = hashStringToNumber(bookingId);
-    await cancelReservation(booking.connector.chargerId, reservationId).catch(err => {
-      console.warn("Failed to cancel OCPP reservation:", err.message);
-    });
+    await cancelReservation(booking.connector.chargerId, reservationId).catch(
+      (err) => {
+        console.warn("Failed to cancel OCPP reservation:", err.message);
+      },
+    );
   }
 
   return {
@@ -271,7 +284,7 @@ export async function cancelBooking(bookingId, userId) {
 
 /**
  * Mark booking as used (when charging starts)
- * 
+ *
  * @param {string} bookingId
  * @returns {Promise<object>}
  */
@@ -286,9 +299,9 @@ export async function markBookingUsed(bookingId) {
 
 /**
  * Handle booking expiry (no-show)
- * 
+ *
  * Called by the booking expiry worker
- * 
+ *
  * @param {string} bookingId
  * @returns {Promise<object>}
  */
@@ -319,7 +332,11 @@ export async function handleBookingExpiry(bookingId) {
 
   // Already processed
   if (booking.status !== "ACTIVE") {
-    return { success: true, skipped: true, reason: `Status is ${booking.status}` };
+    return {
+      success: true,
+      skipped: true,
+      reason: `Status is ${booking.status}`,
+    };
   }
 
   const { connector, user } = booking;
@@ -337,7 +354,7 @@ export async function handleBookingExpiry(bookingId) {
     connector.connectorId,
     bookingId,
     booking.startTime,
-    60
+    60,
   );
 
   // Cancel OCPP reservation
@@ -352,12 +369,14 @@ export async function handleBookingExpiry(bookingId) {
     const penaltyResult = await applyNoShowPenalty(
       user.id,
       bookingId,
-      config.noShowPenaltyAmount
+      config.noShowPenaltyAmount,
     );
     penaltyApplied = penaltyResult.success;
   }
 
-  console.log(`📅 Booking ${bookingId} expired (no-show), penalty: ${penaltyApplied}`);
+  console.log(
+    `📅 Booking ${bookingId} expired (no-show), penalty: ${penaltyApplied}`,
+  );
 
   return {
     success: true,
@@ -369,10 +388,10 @@ export async function handleBookingExpiry(bookingId) {
 
 /**
  * Validate booking for charging start
- * 
+ *
  * Called during StartTransaction to check if the user has a valid booking
  * or if walk-in is allowed
- * 
+ *
  * @param {string} chargerId
  * @param {number} connectorId
  * @param {string} idTag - User identifier
@@ -391,7 +410,11 @@ export async function validateBookingForStart(chargerId, connectorId, idTag) {
 
   if (!connector) {
     // Connector not in DB, allow charging (walk-in)
-    return { allowed: true, type: "WALKIN", reason: "Connector not registered" };
+    return {
+      allowed: true,
+      type: "WALKIN",
+      reason: "Connector not registered",
+    };
   }
 
   // Check for active booking on this connector
@@ -436,11 +459,11 @@ export async function validateBookingForStart(chargerId, connectorId, idTag) {
 
 /**
  * Check if walk-in is allowed on a connector
- * 
+ *
  * Walk-in is allowed if:
  * - No active booking
  * - Active booking has expired (grace period passed)
- * 
+ *
  * @param {string} chargerId
  * @param {number} connectorId
  * @returns {Promise<object>}
@@ -478,7 +501,7 @@ export async function checkWalkInAllowed(chargerId, connectorId) {
 
 /**
  * Get user's bookings
- * 
+ *
  * @param {string} userId
  * @param {object} options
  * @returns {Promise<object[]>}
@@ -514,13 +537,17 @@ export async function getUserBookings(userId, options = {}) {
 
 /**
  * Get upcoming bookings for a connector
- * 
+ *
  * @param {string} chargerId
  * @param {number} connectorId
  * @param {number} hoursAhead
  * @returns {Promise<object[]>}
  */
-export async function getConnectorBookings(chargerId, connectorId, hoursAhead = 24) {
+export async function getConnectorBookings(
+  chargerId,
+  connectorId,
+  hoursAhead = 24,
+) {
   const now = new Date();
   const future = new Date();
   future.setHours(future.getHours() + hoursAhead);
@@ -545,7 +572,7 @@ export async function getConnectorBookings(chargerId, connectorId, hoursAhead = 
     orderBy: { startTime: "asc" },
   });
 
-  return bookings.map(b => ({
+  return bookings.map((b) => ({
     startTime: b.startTime,
     expiryTime: b.expiryTime,
     // Don't expose user info in public endpoint
@@ -573,16 +600,25 @@ function validateBookingTime(startTime, durationMinutes) {
   const maxFuture = new Date();
   maxFuture.setHours(maxFuture.getHours() + config.maxBookingHours);
   if (start > maxFuture) {
-    return { valid: false, error: `Cannot book more than ${config.maxBookingHours} hours in advance` };
+    return {
+      valid: false,
+      error: `Cannot book more than ${config.maxBookingHours} hours in advance`,
+    };
   }
 
   // Duration constraints
   if (durationMinutes < config.minBookingMinutes) {
-    return { valid: false, error: `Minimum booking duration is ${config.minBookingMinutes} minutes` };
+    return {
+      valid: false,
+      error: `Minimum booking duration is ${config.minBookingMinutes} minutes`,
+    };
   }
 
   if (durationMinutes > config.maxBookingMinutes) {
-    return { valid: false, error: `Maximum booking duration is ${config.maxBookingMinutes} minutes` };
+    return {
+      valid: false,
+      error: `Maximum booking duration is ${config.maxBookingMinutes} minutes`,
+    };
   }
 
   return { valid: true };
@@ -591,7 +627,11 @@ function validateBookingTime(startTime, durationMinutes) {
 /**
  * Check for user's conflicting bookings
  */
-async function checkUserConflictingBookings(userId, startTime, durationMinutes) {
+async function checkUserConflictingBookings(
+  userId,
+  startTime,
+  durationMinutes,
+) {
   const start = new Date(startTime);
   const end = new Date(start);
   end.setMinutes(end.getMinutes() + durationMinutes);
@@ -631,7 +671,7 @@ function getStationConfig(station) {
 
 /**
  * Apply no-show penalty
- * 
+ *
  * Uses a separate ledger entry type for penalties (recorded as CHARGE_DEBIT with penalty metadata)
  */
 async function applyNoShowPenalty(userId, bookingId, amount) {
@@ -639,11 +679,16 @@ async function applyNoShowPenalty(userId, bookingId, amount) {
 
   try {
     // Check if user has sufficient balance
-    const balanceCheck = await walletService.checkSufficientBalance(userId, amount);
-    
+    const balanceCheck = await walletService.checkSufficientBalance(
+      userId,
+      amount,
+    );
+
     if (!balanceCheck.sufficient) {
       // Deduct what's available, track the rest as owed (not implemented - just log)
-      console.warn(`[BOOKING] User ${userId} cannot pay full no-show penalty: ${amount}`);
+      console.warn(
+        `[BOOKING] User ${userId} cannot pay full no-show penalty: ${amount}`,
+      );
       // For now, skip penalty if insufficient funds
       return { success: false, error: "Insufficient balance for penalty" };
     }
@@ -660,7 +705,7 @@ async function applyNoShowPenalty(userId, bookingId, amount) {
     if (result.success) {
       return { success: true, amount };
     }
-    
+
     return { success: false, error: result.reason || "Deduction failed" };
   } catch (error) {
     console.error("Failed to apply no-show penalty:", error.message);
@@ -671,7 +716,12 @@ async function applyNoShowPenalty(userId, bookingId, amount) {
 /**
  * Send OCPP ReserveNow to charger
  */
-async function sendOcppReservation(booking, chargerId, connectorId, expiryTime) {
+async function sendOcppReservation(
+  booking,
+  chargerId,
+  connectorId,
+  expiryTime,
+) {
   try {
     const reservationId = hashStringToNumber(booking.id);
     const result = await reserveNow(chargerId, {
@@ -703,7 +753,7 @@ async function scheduleBookingExpiry(bookingId, expiryTime) {
         delay,
         jobId: `expiry-${bookingId}`,
         removeOnComplete: true,
-      }
+      },
     );
   } catch (error) {
     console.error("Failed to schedule booking expiry:", error);
@@ -728,7 +778,7 @@ async function scheduleOcppReservation(bookingId, startTime) {
         delay,
         jobId: `reserve-${bookingId}`,
         removeOnComplete: true,
-      }
+      },
     );
   } catch (error) {
     console.error("Failed to schedule OCPP reservation:", error);
@@ -741,10 +791,7 @@ async function scheduleOcppReservation(bookingId, startTime) {
 async function resolveUserFromIdTag(idTag) {
   const user = await prisma.user.findFirst({
     where: {
-      OR: [
-        { id: idTag },
-        { firebaseUid: idTag },
-      ],
+      OR: [{ id: idTag }, { firebaseUid: idTag }],
     },
   });
 
@@ -760,12 +807,14 @@ function formatBookingResponse(booking) {
     startTime: booking.startTime,
     expiryTime: booking.expiryTime,
     status: booking.status,
-    charger: booking.connector?.charger ? {
-      id: booking.connector.charger.id,
-      connectorId: booking.connector.connectorId,
-      station: booking.connector.charger.station?.name,
-      address: booking.connector.charger.station?.address,
-    } : null,
+    charger: booking.connector?.charger
+      ? {
+          id: booking.connector.charger.id,
+          connectorId: booking.connector.connectorId,
+          station: booking.connector.charger.station?.name,
+          address: booking.connector.charger.station?.address,
+        }
+      : null,
     createdAt: booking.createdAt,
   };
 }
@@ -777,7 +826,7 @@ function hashStringToNumber(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
+    hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
   return Math.abs(hash);
@@ -793,4 +842,3 @@ export default {
   getUserBookings,
   getConnectorBookings,
 };
-
