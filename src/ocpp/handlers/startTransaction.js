@@ -15,22 +15,21 @@ import Decimal from "decimal.js";
  * 
  * Sent by the Charge Point when a charging session starts.
  * 
- * Booking Integration:
- * - Validates if user has a booking OR if walk-in is allowed
- * - Marks booking as used if applicable
- * - Acquires connector lock for the session
+ * IMPORTANT: Per OCPP 1.6 Section 6.46, transactionId MUST be an integer.
+ * We use the DB autoincrement session.id as the OCPP transactionId, and
+ * keep the string-based transactionId for internal reference/billing.
  * 
  * Request: {
- *   connectorId: number,
- *   idTag: string,
- *   meterStart: number (Wh),
- *   reservationId?: number,
- *   timestamp: ISO8601
+ *   connectorId: number (Required),
+ *   idTag: CiString20Type (Required),
+ *   meterStart: integer Wh (Required),
+ *   reservationId?: integer,
+ *   timestamp: ISO8601 (Required)
  * }
  * 
  * Response: {
- *   transactionId: number,
- *   idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? }
+ *   transactionId: integer (Required),
+ *   idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? } (Required)
  * }
  */
 export default async function startTransaction(ws, messageId, chargerId, payload) {
@@ -46,8 +45,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
 
   console.log(`[START] ${chargerId}#${connectorId}: idTag=${idTag}, meter=${meterStart}Wh`);
 
-  // Generate unique transaction ID
-  const transactionId = generateTransactionId(chargerId);
+  // Generate internal transaction ID string (for billing, ledger, etc.)
+  const internalTransactionId = generateTransactionId(chargerId);
 
   // Check authorization
   const authResult = await checkStartAuthorization(chargerId, connectorId, idTag, reservationId);
@@ -73,7 +72,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const lockResult = await connectorLockService.markChargingActive(
     chargerId,
     connectorId,
-    transactionId
+    internalTransactionId
   );
 
   if (!lockResult.acquired) {
@@ -82,10 +81,11 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   }
 
   // Create session in database
+  // session.id (autoincrement integer) will be used as the OCPP transactionId
   const { session, duplicate } = await sessionService.createSession({
     chargerId,
     connectorId,
-    transactionId,
+    transactionId: internalTransactionId,
     idTag,
     userId,
     meterStart,
@@ -94,13 +94,18 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   });
 
   if (duplicate) {
-    console.log(`[START] Duplicate transaction: ${transactionId}`);
+    console.log(`[START] Duplicate transaction: ${internalTransactionId}`);
   }
 
-  // Update charger state
+  // OCPP transactionId MUST be an integer (OCPP 1.6 Section 6.46)
+  // Use session.id (autoincrement Int from DB) as the OCPP transaction ID
+  const ocppTransactionId = session.id;
+
+  // Update charger state - store both IDs for cross-reference
   updateChargerState(chargerId, {
     status: "Charging",
-    transactionId,
+    transactionId: internalTransactionId,       // Internal string ID for billing/ledger
+    ocppTransactionId: ocppTransactionId,        // Integer ID sent to charger
     connectorId,
     meterStart,
     lastMeterValue: meterStart,
@@ -120,7 +125,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   ocppEvents.emitSessionStarted({
     chargerId,
     connectorId,
-    transactionId,
+    transactionId: internalTransactionId,
+    ocppTransactionId,
     idTag,
     userId,
     meterStart,
@@ -129,16 +135,16 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     startType: authResult.type, // BOOKING or WALKIN
   });
 
-  // Send response
+  // Send response - transactionId MUST be integer per OCPP 1.6 spec
   sendCallResult(ws, messageId, {
-    transactionId,
+    transactionId: ocppTransactionId,
     idTagInfo: {
       status: AuthorizationStatus.ACCEPTED,
       expiryDate: getExpiryDate(24),
     },
   });
 
-  console.log(`✅ [START] Transaction ${transactionId} started (${authResult.type})`);
+  console.log(`✅ [START] Session ${ocppTransactionId} (internal: ${internalTransactionId}) started (${authResult.type})`);
 }
 
 /**

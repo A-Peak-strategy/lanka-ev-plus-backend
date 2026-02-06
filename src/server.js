@@ -6,6 +6,10 @@ import chargerStore from "./services/chargerStore.service.js";
 import { syncChargerToDb } from "./services/chargerPersistence.service.js";
 import { initializeFirebase } from "./config/firebase.js";
 import { checkRedisAvailable } from "./config/redis.js";
+import { validateEnv } from "./config/env.js";
+
+// Validate environment variables before anything else
+validateEnv();
 
 // Initialize Firebase (optional - won't crash if not configured)
 try {

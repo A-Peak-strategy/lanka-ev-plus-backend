@@ -1,5 +1,8 @@
 import adminService from "../services/admin.service.js";
 import settlementService from "../services/settlement.service.js";
+import prisma from "../config/db.js";
+import chargerStore from "../services/chargerStore.service.js";
+import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
 
 /**
  * Admin Controller
@@ -657,10 +660,246 @@ export async function getAuditLogs(req, res) {
   }
 }
 
+// ============================================
+// DASHBOARD
+// ============================================
+
+/**
+ * Get dashboard metrics
+ * GET /api/admin/dashboard/metrics
+ */
+export async function getDashboardMetrics(req, res) {
+  try {
+    const [userCount, chargerCount, activeSessions, totalRevenue] = await Promise.all([
+      prisma.user.count({ where: { role: "CONSUMER" } }),
+      prisma.charger.count(),
+      prisma.chargingSession.count({ where: { endedAt: null } }),
+      prisma.chargingSession.aggregate({
+        _sum: { totalCost: true },
+        where: { endedAt: { not: null } },
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totalUsers: userCount,
+        totalChargers: chargerCount,
+        activeSessions,
+        totalRevenue: totalRevenue._sum.totalCost?.toString() || "0",
+      },
+    });
+  } catch (error) {
+    console.error("Get dashboard metrics error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get single session by ID
+ * GET /api/admin/sessions/:sessionId
+ */
+export async function getSessionById(req, res) {
+  try {
+    const { sessionId } = req.params;
+    const session = await prisma.chargingSession.findUnique({
+      where: { id: parseInt(sessionId) },
+      include: {
+        charger: { include: { station: true } },
+        user: { select: { id: true, name: true, email: true, phone: true } },
+      },
+    });
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" });
+    }
+
+    res.json({ success: true, data: session });
+  } catch (error) {
+    console.error("Get session by ID error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Force stop a charging session
+ * POST /api/admin/sessions/:sessionId/force-stop
+ */
+export async function forceStopSession(req, res) {
+  try {
+    const { sessionId } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user?.id || "system";
+
+    const session = await prisma.chargingSession.findUnique({
+      where: { id: parseInt(sessionId) },
+    });
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" });
+    }
+
+    if (session.endedAt) {
+      return res.status(400).json({ success: false, error: "Session already ended" });
+    }
+
+    // Try to send OCPP remote stop
+    try {
+      await remoteStopTransaction(session.chargerId, session.transactionId);
+    } catch (ocppErr) {
+      console.warn("OCPP remote stop failed, marking session ended directly:", ocppErr.message);
+    }
+
+    // Mark session as ended
+    const updated = await prisma.chargingSession.update({
+      where: { id: parseInt(sessionId) },
+      data: {
+        endedAt: new Date(),
+        stopReason: reason || "ADMIN_FORCE_STOP",
+      },
+    });
+
+    // Log admin action
+    await prisma.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "FORCE_STOP_SESSION",
+        targetType: "SESSION",
+        targetId: sessionId.toString(),
+        newValue: JSON.stringify({ reason }),
+      },
+    });
+
+    res.json({ success: true, data: updated, message: "Session force stopped" });
+  } catch (error) {
+    console.error("Force stop session error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get single station by ID
+ * GET /api/admin/stations/:stationId
+ */
+export async function getStationById(req, res) {
+  try {
+    const { stationId } = req.params;
+    const station = await prisma.station.findUnique({
+      where: { id: stationId },
+      include: {
+        owner: { select: { id: true, name: true, email: true } },
+        pricing: true,
+        chargers: { include: { connectors: true } },
+      },
+    });
+
+    if (!station) {
+      return res.status(404).json({ success: false, error: "Station not found" });
+    }
+
+    res.json({ success: true, data: station });
+  } catch (error) {
+    console.error("Get station by ID error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Update station
+ * PUT /api/admin/stations/:stationId
+ */
+export async function updateStation(req, res) {
+  try {
+    const { stationId } = req.params;
+    const adminId = req.user?.id || "system";
+
+    const allowedFields = ["name", "address", "lat", "lng", "pricingId", "isActive", "bookingEnabled"];
+    const data = {};
+    for (const key of allowedFields) {
+      if (req.body[key] !== undefined) {
+        data[key] = req.body[key];
+      }
+    }
+
+    const previous = await prisma.station.findUnique({ where: { id: stationId } });
+    if (!previous) {
+      return res.status(404).json({ success: false, error: "Station not found" });
+    }
+
+    const updated = await prisma.station.update({
+      where: { id: stationId },
+      data,
+    });
+
+    await prisma.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "UPDATE_STATION",
+        targetType: "STATION",
+        targetId: stationId,
+        previousValue: JSON.stringify(previous),
+        newValue: JSON.stringify(data),
+      },
+    });
+
+    res.json({ success: true, data: updated, message: "Station updated" });
+  } catch (error) {
+    console.error("Update station error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get single user by ID
+ * GET /api/admin/users/:userId
+ */
+export async function getUserById(req, res) {
+  try {
+    const { userId } = req.params;
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { wallet: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    res.json({ success: true, data: user });
+  } catch (error) {
+    console.error("Get user by ID error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get user's wallet (admin access)
+ * GET /api/admin/users/:userId/wallet
+ */
+export async function getUserWallet(req, res) {
+  try {
+    const { userId } = req.params;
+    const wallet = await prisma.wallet.findUnique({
+      where: { userId },
+    });
+
+    if (!wallet) {
+      return res.status(404).json({ success: false, error: "Wallet not found" });
+    }
+
+    res.json({ success: true, data: wallet });
+  } catch (error) {
+    console.error("Get user wallet error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
 export default {
   // Users
   createOwner,
   getUsers,
+  getUserById,
+  getUserWallet,
   updateUserStatus,
   
   // Chargers
@@ -671,6 +910,8 @@ export default {
   // Stations
   createStation,
   getStations,
+  getStationById,
+  updateStation,
   assignStationToOwner,
   
   // Pricing
@@ -681,7 +922,12 @@ export default {
   
   // Sessions
   getSessions,
+  getSessionById,
   getSessionStats,
+  forceStopSession,
+  
+  // Dashboard
+  getDashboardMetrics,
   
   // OCPP Logs
   getOcppLogs,

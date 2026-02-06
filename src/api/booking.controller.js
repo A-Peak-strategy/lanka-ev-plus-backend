@@ -30,9 +30,8 @@ import { DateTime } from "luxon";
  */
 export async function createBooking(req, res, next) {
   try {
-    // Get userId from auth (or request body for testing)
+    // Get userId from authenticated user
     const userId = req.user?.id;
-    console.log("Auth user", JSON.stringify(req.user));
 
     if (!userId) {
       throw new AuthenticationError("User authentication required");

@@ -183,19 +183,9 @@ export function setupEventListeners() {
     });
   }
 
-  // Billing integration
-  ocppEvents.on("session:meterUpdate", async (data) => {
-    try {
-      const { processMeterValuesBilling } = await import("../services/billing.service.js");
-      await processMeterValuesBilling({
-        chargerId: data.chargerId,
-        transactionId: data.transactionId,
-        currentMeterWh: data.meterWh,
-      });
-    } catch (error) {
-      console.error("Billing integration error:", error.message);
-    }
-  });
+  // NOTE: Billing is handled directly in meterValues.js handler.
+  // Do NOT add billing here - it would cause double billing since the
+  // meterValues handler already calls processMeterValuesBilling() before emitting this event.
 
   // Handle faults with partial refund
   ocppEvents.on("session:faulted", async (data) => {

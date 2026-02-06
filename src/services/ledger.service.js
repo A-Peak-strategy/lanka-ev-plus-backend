@@ -483,7 +483,7 @@ export function generateIdempotencyKey(prefix, ...parts) {
 
 // Helper functions
 function isDebitType(type) {
-  return [LedgerType.CHARGE_DEBIT, LedgerType.COMMISSION].includes(type);
+  return [LedgerType.CHARGE_DEBIT, LedgerType.COMMISSION, LedgerType.SETTLEMENT_PAYOUT].includes(type);
 }
 
 function getCompensatingType(type) {

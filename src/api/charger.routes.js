@@ -7,25 +7,26 @@ import {
   startCharging,
   stopCharging
 } from "./charger.controller.js";
+import { verifyToken, requireActiveUser, optionalAuth } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-// GET /api/chargers - Get all chargers
-router.get("/", getAllChargers);
+// GET /api/chargers - Get all chargers (public, optional auth for personalization)
+router.get("/", optionalAuth, getAllChargers);
 
-// GET /api/chargers/:chargerId - Get single charger
-router.get("/:chargerId", getCharger);
+// GET /api/chargers/:chargerId - Get single charger (public)
+router.get("/:chargerId", optionalAuth, getCharger);
 
-// GET /api/chargers/:chargerId/status - Get charger status
-router.get("/:chargerId/status", getChargerStatus);
+// GET /api/chargers/:chargerId/status - Get charger status (public)
+router.get("/:chargerId/status", optionalAuth, getChargerStatus);
 
-// GET /api/chargers/:chargerId/sessions - Get charger sessions
-router.get("/:chargerId/sessions", getChargerSessions);
+// GET /api/chargers/:chargerId/sessions - Get charger sessions (requires auth)
+router.get("/:chargerId/sessions", verifyToken, requireActiveUser, getChargerSessions);
 
-// POST /api/chargers/:chargerId/start - Start charging
-router.post("/:chargerId/start", startCharging);
+// POST /api/chargers/:chargerId/start - Start charging (requires auth)
+router.post("/:chargerId/start", verifyToken, requireActiveUser, startCharging);
 
-// POST /api/chargers/:chargerId/stop - Stop charging
-router.post("/:chargerId/stop", stopCharging);
+// POST /api/chargers/:chargerId/stop - Stop charging (requires auth)
+router.post("/:chargerId/stop", verifyToken, requireActiveUser, stopCharging);
 
 export default router;

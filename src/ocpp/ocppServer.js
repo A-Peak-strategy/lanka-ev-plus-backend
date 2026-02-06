@@ -39,6 +39,17 @@ export const startOcppServer = (server) => {
     server,
     path: undefined, // Accept connections on any path
     verifyClient: verifyChargerConnection,
+    // OCPP 1.6-J requires subprotocol negotiation
+    handleProtocols: (protocols, req) => {
+      // Real chargers send "ocpp1.6" (or "ocpp1.6j") as subprotocol
+      if (protocols.has("ocpp1.6")) return "ocpp1.6";
+      if (protocols.has("ocpp1.6j")) return "ocpp1.6j";
+      // Accept even if no subprotocol is specified (for testing tools)
+      if (protocols.size === 0) return false;
+      // If charger sends unknown protocols, still accept but log warning
+      console.warn(`⚠️ Unknown OCPP subprotocols: ${[...protocols].join(", ")}`);
+      return [...protocols][0]; // Accept the first offered protocol
+    },
   });
 
   wss.on("connection", async (ws, req) => {
@@ -128,16 +139,16 @@ function verifyChargerConnection(info, callback) {
     return;
   }
 
-  // Check OCPP subprotocol
+  // Subprotocol negotiation is handled by handleProtocols option
+  // Log the charger's offered protocols for debugging
   const protocols = info.req.headers["sec-websocket-protocol"];
-  if (protocols && !protocols.includes("ocpp1.6")) {
-    console.warn(`⚠️ Charger ${chargerId} using non-standard protocol: ${protocols}`);
-    // Still accept - many chargers don't send correct subprotocol
+  if (protocols) {
+    console.log(`🔌 Charger ${chargerId} offers protocols: ${protocols}`);
+  } else {
+    console.warn(`⚠️ Charger ${chargerId} did not offer any OCPP subprotocol`);
   }
 
-  // TODO: Add charger registration validation
-  // For now, accept all connections (charger will be registered on BootNotification)
-
+  // Accept connection - charger identity is validated on BootNotification
   callback(true);
 }
 

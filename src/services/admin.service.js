@@ -455,9 +455,18 @@ export async function updatePricing(pricingId, data, adminId) {
   const current = await prisma.pricing.findUnique({ where: { id: pricingId } });
   if (!current) throw new Error("Pricing not found");
 
+  // Whitelist allowed fields to prevent overwriting id, createdAt, etc.
+  const allowedFields = ["name", "pricePerKwh", "commissionRate", "gracePeriodSec", "lowBalanceThreshold", "isDefault", "isActive"];
+  const sanitizedData = {};
+  for (const key of allowedFields) {
+    if (data[key] !== undefined) {
+      sanitizedData[key] = data[key];
+    }
+  }
+
   const updated = await prisma.pricing.update({
     where: { id: pricingId },
-    data,
+    data: sanitizedData,
   });
 
   await logAdminAction({

@@ -39,9 +39,9 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     return;
   }
 
-  // Get charger state
+  // Get charger state - use internal string transactionId for billing
   const chargerState = getChargerState(chargerId);
-  const activeTransactionId = chargerState?.transactionId || transactionId?.toString();
+  const activeTransactionId = chargerState?.transactionId;
 
   if (!activeTransactionId) {
     console.warn(`[METER] ${chargerId}: No active transaction`);
@@ -77,17 +77,9 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     ? energyWh - chargerState.meterStart 
     : 0;
 
-  // Emit event for billing (handled by event listener)
-  ocppEvents.emitMeterUpdate({
-    chargerId,
-    connectorId,
-    transactionId: activeTransactionId,
-    meterWh: energyWh,
-    energyUsedWh: energyUsed,
-    readings,
-  });
-
-  // Process billing directly (in addition to event)
+  // Process billing directly (NOT via event emitter to avoid double billing)
+  // The session:meterUpdate event listener in ocppEvents.js also calls billing,
+  // so we emit the event AFTER billing to share the result with other listeners.
   try {
     const billingResult = await billingService.processMeterValuesBilling({
       chargerId,
@@ -116,6 +108,17 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   } catch (error) {
     console.error(`[METER] Session update error:`, error.message);
   }
+
+  // Emit event AFTER billing (for other listeners like logging, notifications)
+  // Note: Do NOT add billing logic in the event listener to avoid double billing
+  ocppEvents.emitMeterUpdate({
+    chargerId,
+    connectorId,
+    transactionId: activeTransactionId,
+    meterWh: energyWh,
+    energyUsedWh: energyUsed,
+    readings,
+  });
 
   // Send empty response
   sendCallResult(ws, messageId, {});
@@ -147,18 +150,30 @@ function extractMeterReadings(meterValue) {
   for (const sample of lastEntry.sampledValue) {
     const measurand = sample.measurand || Measurand.ENERGY_ACTIVE_IMPORT_REGISTER;
     const value = parseFloat(sample.value);
+    const unit = sample.unit; // Per OCPP 1.6 Section 7.45: Wh, kWh, varh, kvarh, W, kW, VA, kVA, var, kvar, A, V, K, Celcius, Celsius, Fahrenheit, Percent
 
     if (isNaN(value)) continue;
 
     switch (measurand) {
       case Measurand.ENERGY_ACTIVE_IMPORT_REGISTER:
       case "Energy.Active.Import.Register":
-        readings.energy = value;
+        // CRITICAL: Some chargers report in kWh, our system expects Wh
+        // Per OCPP 1.6 spec, default unit for Energy is Wh, but "unit" field can override
+        if (unit === "kWh") {
+          readings.energy = Math.round(value * 1000); // Convert kWh → Wh
+        } else {
+          readings.energy = value; // Default: Wh
+        }
         break;
 
       case Measurand.POWER_ACTIVE_IMPORT:
       case "Power.Active.Import":
-        readings.power = value;
+        // Default unit: W. Some chargers may send kW
+        if (unit === "kW") {
+          readings.power = value * 1000;
+        } else {
+          readings.power = value;
+        }
         break;
 
       case Measurand.CURRENT_IMPORT:
@@ -182,9 +197,13 @@ function extractMeterReadings(meterValue) {
         break;
 
       default:
-        // If no measurand specified and this is the first value, assume it's energy
+        // If no measurand specified and this is the first value, assume it's energy (Wh)
         if (!sample.measurand && readings.energy === null) {
-          readings.energy = value;
+          if (unit === "kWh") {
+            readings.energy = Math.round(value * 1000);
+          } else {
+            readings.energy = value;
+          }
         }
     }
   }
