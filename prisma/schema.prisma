@@ -271,7 +271,7 @@ model ChargingSession {
   id              Int       @id @default(autoincrement())
   
   // Unique transaction identifier
-  transactionId   String    @unique
+  transactionId   Int    @unique
   
   // Relations
   chargerId       String

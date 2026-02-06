@@ -4,5 +4,5 @@ export function generateTransactionId(chargerId) {
     .toISOString()          
     .replace(/[-:.TZ]/g, ""); 
 
-  return `${chargerId}-${timestamp}`;
+  return `${timestamp}`;
 }

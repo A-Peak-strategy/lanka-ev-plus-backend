@@ -1,0 +1,4558 @@
+import { sendCall } from "../messageQueue.js";
+import { CStoCPAction, CancelReservationStatus } from "../ocppConstants.js";
+import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+import prisma from "../../config/db.js";
+
+/**
+ * CancelReservation Command
+ * 
+ * Sent by Central System to cancel a reservation.
+ * 
+ * Request: {
+ *   reservationId: number
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Rejected"
+ * }
+ */
+
+/**
+ * Send CancelReservation to a charger
+ * 
+ * @param {string} chargerId - Target charger ID
+ * @param {number} reservationId - Reservation to cancel
+ * @returns {Promise<object>} Command result
+ */
+export async function cancelReservation(chargerId, reservationId) {
+  if (!reservationId) {
+    throw new Error("reservationId is required for CancelReservation");
+  }
+
+  // Check if charger is online
+  if (!isChargerOnline(chargerId)) {
+    return {
+      success: false,
+      status: "Offline",
+      error: "Charger is not connected",
+    };
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  try {
+    console.log(`[CMD] CancelReservation 1 → ${chargerId} (resId: ${reservationId})`);
+
+    const response = await sendCall(
+      ws,
+      chargerId,
+      CStoCPAction.CANCEL_RESERVATION,
+      { reservationId },
+      { timeout: 30000 }
+    );
+
+    console.log("Response form the ocpp charger when cancel booking", response);
+
+    const accepted = response.status === CancelReservationStatus.ACCEPTED;
+
+    console.log(`[CMD] CancelReservation 2 ← ${chargerId}: ${response.status}`);
+
+    return {
+      success: accepted,
+      status: response.status,
+      chargerId,
+      reservationId,
+    };
+  } catch (error) {
+    console.error(`[CMD] CancelReservation error for ${chargerId}:`, error.message);
+    return {
+      success: false,
+      status: "Error",
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Cancel a booking and release the reservation
+ * 
+ * @param {string} bookingId - Booking ID to cancel
+ * @returns {Promise<object>}
+ */
+export async function cancelBooking(bookingId) {
+  // Get booking with connector info
+  const booking = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    include: {
+      connector: {
+        include: {
+          charger: true,
+        },
+      },
+    },
+  });
+
+  if (!booking) {
+    return {
+      success: false,
+      error: "Booking not found",
+    };
+  }
+
+  if (booking.status !== "ACTIVE") {
+    return {
+      success: false,
+      error: `Booking is not active (status: ${booking.status})`,
+    };
+  }
+
+  const chargerId = booking.connector.chargerId;
+  const reservationId = hashStringToNumber(booking.id);
+
+  // Cancel on charger
+  const result = await cancelReservation(chargerId, reservationId);
+
+  // Update booking status regardless of charger response
+  // (booking should be cancelled even if charger is offline)
+  await prisma.booking.update({
+    where: { id: bookingId },
+    data: { status: "CANCELLED" },
+  });
+
+  if (!result.success && result.status !== "Offline") {
+    console.warn(`Charger rejected cancellation but booking was cancelled: ${result.status}`);
+  }
+
+  return {
+    success: true,
+    booking: { id: bookingId, status: "CANCELLED" },
+    chargerResult: result,
+  };
+}
+
+/**
+ * Cancel expired bookings
+ * 
+ * Should be run periodically to clean up expired reservations
+ * 
+ * @returns {Promise<number>} Number of bookings cancelled
+ */
+export async function cancelExpiredBookings() {
+  const now = new Date();
+
+  // Find expired active bookings
+  const expiredBookings = await prisma.booking.findMany({
+    where: {
+      status: "ACTIVE",
+      expiryTime: { lt: now },
+    },
+    include: {
+      connector: true,
+    },
+  });
+
+  let cancelledCount = 0;
+
+  for (const booking of expiredBookings) {
+    try {
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: { status: "EXPIRED" },
+      });
+
+      // Try to cancel on charger (may fail if offline)
+      const chargerId = booking.connector.chargerId;
+      const reservationId = hashStringToNumber(booking.id);
+      
+      await cancelReservation(chargerId, reservationId).catch(() => {
+        // Ignore errors - charger may be offline
+      });
+
+      cancelledCount++;
+    } catch (error) {
+      console.error(`Error cancelling expired booking ${booking.id}:`, error);
+    }
+  }
+
+  if (cancelledCount > 0) {
+    console.log(`Cancelled ${cancelledCount} expired bookings`);
+  }
+
+  return cancelledCount;
+}
+
+/**
+ * Convert string ID to numeric for OCPP reservation ID
+ */
+function hashStringToNumber(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash);
+}
+
+export default {
+  cancelReservation,
+  cancelBooking,
+  cancelExpiredBookings,
+};
+
+//index.js
+/**
+ * OCPP Commands (Central System → Charge Point)
+ * 
+ * This module exports all available OCPP commands that can be sent
+ * from the Central System to Charge Points.
+ */
+
+export { 
+  remoteStartTransaction, 
+  startChargingForUser 
+} from "./remoteStartTransaction.js";
+
+export { 
+  remoteStopTransaction, 
+  stopChargingAtCharger,
+  forceStopForGrace 
+} from "./remoteStopTransaction.js";
+
+export { 
+  reserveNow, 
+  createBookingWithReservation 
+} from "./reserveNow.js";
+
+export { 
+  cancelReservation, 
+  cancelBooking,
+  cancelExpiredBookings 
+} from "./cancelReservation.js";
+
+// Re-export as default object for convenience
+export default {
+  // Remote Start/Stop
+  remoteStartTransaction: (...args) => import("./remoteStartTransaction.js").then(m => m.remoteStartTransaction(...args)),
+  remoteStopTransaction: (...args) => import("./remoteStopTransaction.js").then(m => m.remoteStopTransaction(...args)),
+  startChargingForUser: (...args) => import("./remoteStartTransaction.js").then(m => m.startChargingForUser(...args)),
+  stopChargingAtCharger: (...args) => import("./remoteStopTransaction.js").then(m => m.stopChargingAtCharger(...args)),
+  
+  // Reservations
+  reserveNow: (...args) => import("./reserveNow.js").then(m => m.reserveNow(...args)),
+  cancelReservation: (...args) => import("./cancelReservation.js").then(m => m.cancelReservation(...args)),
+  createBookingWithReservation: (...args) => import("./reserveNow.js").then(m => m.createBookingWithReservation(...args)),
+  cancelBooking: (...args) => import("./cancelReservation.js").then(m => m.cancelBooking(...args)),
+};
+
+//remotestart transaction
+import { sendCall } from "../messageQueue.js";
+import { CStoCPAction, RemoteStartStopStatus } from "../ocppConstants.js";
+import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+
+/**
+ * RemoteStartTransaction Command
+ * 
+ * Sent by Central System to start a charging session remotely.
+ * 
+ * Request: {
+ *   connectorId?: number,
+ *   idTag: string,
+ *   chargingProfile?: ChargingProfile
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Rejected"
+ * }
+ */
+
+/**
+ * Send RemoteStartTransaction to a charger
+ * 
+ * @param {string} chargerId - Target charger ID
+ * @param {object} options - Command options
+ * @param {string} options.idTag - User identifier (RFID, userId, etc.)
+ * @param {number} options.connectorId - Specific connector (optional)
+ * @param {object} options.chargingProfile - Charging profile (optional)
+ * @returns {Promise<object>} Command result
+ */
+export async function remoteStartTransaction(chargerId, options) {
+  const { idTag, connectorId, chargingProfile } = options;
+
+  if (!idTag) {
+    throw new Error("idTag is required for RemoteStartTransaction");
+  }
+
+  // Check if charger is online
+  if (!isChargerOnline(chargerId)) {
+    return {
+      success: false,
+      status: "Offline",
+      error: "Charger is not connected",
+    };
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  // Build payload
+  const payload = {
+    idTag,
+  };
+
+  if (connectorId !== undefined) {
+    payload.connectorId = connectorId;
+  }
+
+  if (chargingProfile) {
+    payload.chargingProfile = chargingProfile;
+  }
+
+  try {
+    console.log(`[CMD] RemoteStartTransaction → ${chargerId} (idTag: ${idTag})`);
+
+    const response = await sendCall(
+      ws,
+      chargerId,
+      CStoCPAction.REMOTE_START_TRANSACTION,
+      payload,
+      { timeout: 30000 }
+    );
+
+    const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
+
+    console.log(`[CMD] RemoteStartTransaction ← ${chargerId}: ${response.status}`);
+
+    return {
+      success: accepted,
+      status: response.status,
+      chargerId,
+      idTag,
+      connectorId,
+    };
+  } catch (error) {
+    console.error(`[CMD] RemoteStartTransaction error for ${chargerId}:`, error.message);
+    return {
+      success: false,
+      status: "Error",
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Start charging for a user at a specific charger
+ * 
+ * High-level function that handles user lookup and starts charging
+ * 
+ * @param {object} params
+ * @param {string} params.chargerId - Charger ID
+ * @param {string} params.userId - User ID
+ * @param {number} params.connectorId - Connector ID (optional, defaults to 1)
+ * @returns {Promise<object>}
+ */
+export async function startChargingForUser(params) {
+  const { chargerId, userId, connectorId = 1 } = params;
+
+  // Use userId as idTag (or look up user's RFID tag)
+  const idTag = userId;
+
+  return remoteStartTransaction(chargerId, {
+    idTag,
+    connectorId,
+  });
+}
+
+export default {
+  remoteStartTransaction,
+  startChargingForUser,
+};
+
+//remoteStopTransaction
+import { sendCall } from "../messageQueue.js";
+import { CStoCPAction, RemoteStartStopStatus } from "../ocppConstants.js";
+import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+import { getChargerState } from "../../services/chargerStore.service.js";
+import prisma from "../../config/db.js";
+
+/**
+ * RemoteStopTransaction Command
+ * 
+ * Sent by Central System to stop a charging session remotely.
+ * 
+ * Request: {
+ *   transactionId: number
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Rejected"
+ * }
+ */
+
+/**
+ * Send RemoteStopTransaction to a charger
+ * 
+ * @param {string} chargerId - Target charger ID
+ * @param {string|number} transactionId - Transaction to stop
+ * @returns {Promise<object>} Command result
+ */
+export async function remoteStopTransaction(chargerId, transactionId) {
+
+
+
+  if (!transactionId) {
+    throw new Error("transactionId is required for RemoteStopTransaction");
+  }
+
+  // Check if charger is online
+  if (!isChargerOnline(chargerId)) {
+    return {
+      success: false,
+      status: "Offline",
+      error: "Charger is not connected",
+    };
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  // OCPP 1.6 expects transactionId as integer
+  // Some chargers accept string, others require integer
+  const txId = typeof transactionId === "string" 
+    ? parseInt(transactionId) || transactionId 
+    : transactionId;
+
+  try {
+    console.log(`[CMD] RemoteStopTransaction → ${chargerId} (txId: ${transactionId})`);
+
+    const response = await sendCall(
+      ws,
+      chargerId,
+      CStoCPAction.REMOTE_STOP_TRANSACTION,
+      { transactionId: txId },
+      { timeout: 30000 }
+    );
+
+    console.log("Response from the charger : >>>>>>>>>>>>>>>>>>>>>>>>>", response);
+
+    const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
+
+    console.log(`[CMD] RemoteStopTransaction ← ${chargerId}: ${response.status}`);
+
+    return {
+      success: accepted,
+      status: response.status,
+      chargerId,
+      transactionId,
+    };
+  } catch (error) {
+    console.error(`[CMD] RemoteStopTransaction error for ${chargerId}:`, error.message);
+    return {
+      success: false,
+      status: "Error",
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Stop charging at a specific charger
+ * 
+ * High-level function that finds active transaction and stops it
+ * 
+ * @param {string} chargerId - Charger ID
+ * @returns {Promise<object>}
+ */
+export async function stopChargingAtCharger(chargerId) {
+  // Get active transaction from charger state
+  const chargerState = getChargerState(chargerId);
+  
+  if (!chargerState?.transactionId) {
+    // Try to find from database
+    const session = await prisma.chargingSession.findFirst({
+      where: {
+        chargerId,
+        endedAt: null,
+      },
+      orderBy: { startedAt: "desc" },
+    });
+
+    if (!session) {
+      return {
+        success: false,
+        status: "NoActiveSession",
+        error: "No active charging session found",
+      };
+    }
+
+    return remoteStopTransaction(chargerId, session.transactionId);
+  }
+
+  return remoteStopTransaction(chargerId, chargerState.transactionId);
+}
+
+/**
+ * Force stop for grace period expiry
+ * 
+ * @param {string} chargerId
+ * @param {string} transactionId
+ * @param {string} reason
+ * @returns {Promise<object>}
+ */
+export async function forceStopForGrace(chargerId, transactionId, reason = "Grace period expired") {
+  console.log(`[CMD] Force stopping ${transactionId} on ${chargerId}: ${reason}`);
+
+  const result = await remoteStopTransaction(chargerId, transactionId);
+
+  // Update session with stop reason if successful
+  if (result.success) {
+    try {
+      await prisma.chargingSession.updateMany({
+        where: { transactionId },
+        data: { stopReason: "GRACE_EXPIRED" },
+      });
+    } catch (error) {
+      console.error("Error updating session stop reason:", error);
+    }
+  }
+
+  return result;
+}
+
+export default {
+  remoteStopTransaction,
+  stopChargingAtCharger,
+  forceStopForGrace,
+};
+
+//reservNow
+import { sendCall } from "../messageQueue.js";
+import { CStoCPAction, ReservationStatus } from "../ocppConstants.js";
+import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+import prisma from "../../config/db.js";
+
+/**
+ * ReserveNow Command
+ * 
+ * Sent by Central System to reserve a connector for a specific user.
+ * 
+ * Request: {
+ *   connectorId: number,
+ *   expiryDate: ISO8601,
+ *   idTag: string,
+ *   parentIdTag?: string,
+ *   reservationId: number
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Faulted" | "Occupied" | "Rejected" | "Unavailable"
+ * }
+ */
+
+/**
+ * Send ReserveNow to a charger
+ * 
+ * @param {string} chargerId - Target charger ID
+ * @param {object} options - Reservation options
+ * @param {number} options.connectorId - Connector to reserve
+ * @param {string} options.idTag - User identifier
+ * @param {Date|string} options.expiryDate - Reservation expiry time
+ * @param {number} options.reservationId - Unique reservation ID
+ * @returns {Promise<object>} Command result
+ */
+export async function reserveNow(chargerId, options) {
+  const { connectorId, idTag, expiryDate, reservationId } = options;
+
+  if (!connectorId || !idTag || !expiryDate || !reservationId) {
+    throw new Error("connectorId, idTag, expiryDate, and reservationId are required");
+  }
+
+  // Check if charger is online
+  if (!isChargerOnline(chargerId)) {
+    return {
+      success: false,
+      status: "Offline",
+      error: "Charger is not connected",
+    };
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  // Format expiry date
+  const expiry = typeof expiryDate === "string" 
+    ? expiryDate 
+    : expiryDate.toISOString();
+
+  const payload = {
+    connectorId,
+    expiryDate: expiry,
+    idTag,
+    reservationId,
+  };
+
+  try {
+    console.log(`[CMD] ReserveNow → ${chargerId}#${connectorId} (resId: ${reservationId})`);
+
+    const response = await sendCall(
+      ws,
+      chargerId,
+      CStoCPAction.RESERVE_NOW,
+      payload,
+      { timeout: 30000 }
+    );
+
+    const accepted = response.status === ReservationStatus.ACCEPTED;
+
+    console.log(`[CMD] ReserveNow ← ${chargerId}: ${response.status}`);
+
+    return {
+      success: accepted,
+      status: response.status,
+      chargerId,
+      connectorId,
+      reservationId,
+      expiryDate: expiry,
+    };
+  } catch (error) {
+    console.error(`[CMD] ReserveNow error for ${chargerId}:`, error.message);
+    return {
+      success: false,
+      status: "Error",
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Create a booking and reserve the connector
+ * 
+ * @param {object} params
+ * @param {string} params.userId - User making the booking
+ * @param {string} params.chargerId - Charger ID
+ * @param {number} params.connectorId - Connector ID
+ * @param {Date} params.startTime - Booking start time
+ * @param {number} params.durationMinutes - Reservation duration
+ * @returns {Promise<object>}
+ */
+export async function createBookingWithReservation(params) {
+  const { userId, chargerId, connectorId, startTime, durationMinutes = 30 } = params;
+
+  // Calculate expiry time
+  const expiryDate = new Date(startTime);
+  expiryDate.setMinutes(expiryDate.getMinutes() + durationMinutes);
+
+  // Get connector from database
+  const connector = await prisma.connector.findFirst({
+    where: {
+      chargerId,
+      connectorId,
+    },
+  });
+
+  if (!connector) {
+    return {
+      success: false,
+      error: "Connector not found",
+    };
+  }
+
+  // Create booking in database
+  const booking = await prisma.booking.create({
+    data: {
+      userId,
+      connectorId: connector.id,
+      startTime: new Date(startTime),
+      expiryTime: expiryDate,
+      status: "ACTIVE",
+    },
+  });
+
+  // Use booking ID as reservation ID (needs to be numeric for OCPP)
+  // Hash or convert string ID to number
+  const reservationId = hashStringToNumber(booking.id);
+
+  // Send ReserveNow to charger
+  const result = await reserveNow(chargerId, {
+    connectorId,
+    idTag: userId,
+    expiryDate,
+    reservationId,
+  });
+
+  if (!result.success) {
+    // Rollback booking if charger rejects
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status: "CANCELLED" },
+    });
+
+    return {
+      success: false,
+      error: `Charger rejected reservation: ${result.status}`,
+      chargerStatus: result.status,
+    };
+  }
+
+  return {
+    success: true,
+    booking,
+    reservationId,
+    expiryDate,
+  };
+}
+
+/**
+ * Convert string ID to numeric for OCPP reservation ID
+ */
+function hashStringToNumber(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash);
+}
+
+export default {
+  reserveNow,
+  createBookingWithReservation,
+};
+
+////handlers -> authorize
+import { sendCallResult } from "../messageQueue.js";
+import { AuthorizationStatus } from "../ocppConstants.js";
+import { ocppEvents } from "../ocppEvents.js";
+import prisma from "../../config/db.js";
+
+/**
+ * OCPP Authorize Handler
+ * 
+ * Before starting a charging session, the Charge Point may send an Authorize
+ * request to validate the user's RFID tag or other identifier.
+ * 
+ * Request: { idTag: string }
+ * Response: { idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? } }
+ * 
+ * Authorization Flow:
+ * 1. Check if idTag is in local authorization list (not implemented yet)
+ * 2. Check if idTag is associated with a user in the system
+ * 3. Check if user has sufficient wallet balance
+ * 4. Return Accepted/Blocked/Invalid
+ */
+export default async function authorize(ws, messageId, chargerId, payload) {
+  const { idTag } = payload;
+
+  if (!idTag) {
+    sendCallResult(ws, messageId, {
+      idTagInfo: {
+        status: AuthorizationStatus.INVALID,
+      },
+    });
+    return;
+  }
+
+  // Emit event
+  ocppEvents.emitAuthorizationRequested(chargerId, idTag);
+
+  // Check authorization
+  const authResult = await checkAuthorization(idTag);
+
+  console.log(`[AUTH] ${chargerId} idTag: ${idTag} -> ${authResult.status}`);
+
+  sendCallResult(ws, messageId, {
+    idTagInfo: authResult,
+  });
+}
+
+/**
+ * Check if an idTag is authorized
+ * 
+ * @param {string} idTag
+ * @returns {Promise<object>} idTagInfo object
+ */
+async function checkAuthorization(idTag) {
+  try {
+    // Check if idTag is associated with a user
+    // In a real system, you'd have an IdTag model linked to users
+    // For now, we'll check if the idTag matches a user's ID or a known pattern
+
+    // Special case: Accept all tags starting with "USER" for testing
+    if (idTag.startsWith("USER")) {
+      return {
+        status: AuthorizationStatus.ACCEPTED,
+        expiryDate: getExpiryDate(24), // Valid for 24 hours
+      };
+    }
+
+    // Check for user by idTag (could be stored in user profile)
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { id: idTag },
+          { firebaseUid: idTag },
+        ],
+      },
+      include: {
+        wallet: true,
+      },
+    });
+
+    if (!user) {
+      return {
+        status: AuthorizationStatus.INVALID,
+      };
+    }
+
+    // Check if user is active
+    if (!user.isActive) {
+      return {
+        status: AuthorizationStatus.BLOCKED,
+      };
+    }
+
+    // Check wallet balance (optional - allow starting with any balance)
+    // In production, you might require a minimum balance
+    // if (user.wallet && parseFloat(user.wallet.balance) <= 0) {
+    //   return {
+    //     status: AuthorizationStatus.BLOCKED,
+    //   };
+    // }
+
+    // Check for concurrent transactions (if not allowed)
+    const activeSessions = await prisma.chargingSession.count({
+      where: {
+        userId: user.id,
+        endedAt: null,
+      },
+    });
+
+    if (activeSessions > 0) {
+      return {
+        status: AuthorizationStatus.CONCURRENT_TX,
+      };
+    }
+
+    return {
+      status: AuthorizationStatus.ACCEPTED,
+      expiryDate: getExpiryDate(24),
+    };
+  } catch (error) {
+    console.error("Authorization check error:", error);
+    // On error, reject for safety
+    return {
+      status: AuthorizationStatus.INVALID,
+    };
+  }
+}
+
+/**
+ * Get expiry date for authorization
+ * 
+ * @param {number} hours - Hours until expiry
+ * @returns {string} ISO8601 date string
+ */
+function getExpiryDate(hours) {
+  const date = new Date();
+  date.setHours(date.getHours() + hours);
+  return date.toISOString();
+}
+
+//bootnotification
+import { sendCallResult } from "../messageQueue.js";
+import { RegistrationStatus } from "../ocppConstants.js";
+import { updateChargerState } from "../../services/chargerStore.service.js";
+import { syncChargerToDb } from "../../services/chargerPersistence.service.js";
+import { ocppEvents } from "../ocppEvents.js";
+import prisma from "../../config/db.js";
+
+/**
+ * OCPP BootNotification Handler
+ * 
+ * Sent by the Charge Point when it boots up or reconnects.
+ * Contains hardware information about the charger.
+ * 
+ * Request: {
+ *   chargePointVendor: string,
+ *   chargePointModel: string,
+ *   chargePointSerialNumber?: string,
+ *   chargeBoxSerialNumber?: string,
+ *   firmwareVersion?: string,
+ *   iccid?: string,
+ *   imsi?: string,
+ *   meterType?: string,
+ *   meterSerialNumber?: string
+ * }
+ * 
+ * Response: {
+ *   status: "Accepted" | "Pending" | "Rejected",
+ *   currentTime: ISO8601,
+ *   interval: number (heartbeat interval in seconds)
+ * }
+ */
+
+// Default heartbeat interval (seconds)
+const HEARTBEAT_INTERVAL = 300; // 5 minutes
+
+export default async function bootNotification(ws, messageId, chargerId, payload) {
+  const {
+    chargePointVendor,
+    chargePointModel,
+    chargePointSerialNumber,
+    chargeBoxSerialNumber,
+    firmwareVersion,
+    iccid,
+    imsi,
+    meterType,
+    meterSerialNumber,
+  } = payload;
+
+  console.log(`[BOOT] ${chargerId}: ${chargePointVendor} ${chargePointModel}`);
+
+  // Check if charger is registered/allowed
+  const registrationResult = await checkChargerRegistration(
+    chargerId,
+    chargePointSerialNumber || chargeBoxSerialNumber
+  );
+
+  // Update charger state
+  updateChargerState(chargerId, {
+    vendor: chargePointVendor,
+    model: chargePointModel,
+    serialNumber: chargePointSerialNumber || chargeBoxSerialNumber,
+    firmwareVersion,
+    iccid,
+    imsi,
+    meterType,
+    meterSerialNumber,
+    status: "Available",
+    connectionStatus: "Connected",
+    lastHeartbeat: new Date(),
+    lastBoot: new Date(),
+  });
+
+  // Sync to database
+  await syncChargerToDb(chargerId);
+
+  // Update or create charger in database with full info
+  await upsertCharger(chargerId, {
+    chargePointVendor,
+    chargePointModel,
+    chargePointSerialNumber: chargePointSerialNumber || chargeBoxSerialNumber,
+    firmwareVersion,
+    registrationResult,
+  });
+
+  // Emit event
+  ocppEvents.emitChargerBooted(chargerId, payload);
+
+  // Send response
+  sendCallResult(ws, messageId, {
+    status: registrationResult.status,
+    currentTime: new Date().toISOString(),
+    interval: HEARTBEAT_INTERVAL,
+  });
+}
+
+/**
+ * Check if charger is registered and allowed to connect
+ * 
+ * @param {string} chargerId
+ * @param {string} serialNumber
+ * @returns {Promise<object>}
+ */
+async function checkChargerRegistration(chargerId, serialNumber) {
+  try {
+    // Check if charger exists in database
+    const charger = await prisma.charger.findUnique({
+      where: { id: chargerId },
+    });
+
+    if (charger) {
+      // Existing charger
+      if (charger.isRegistered) {
+        return { status: RegistrationStatus.ACCEPTED, isNew: false };
+      } else {
+        // Charger exists but not yet registered by admin
+        // Accept but could return Pending if registration is required
+        return { status: RegistrationStatus.ACCEPTED, isNew: false };
+      }
+    }
+
+    // New charger - auto-register (or return Pending if manual registration required)
+    // For now, accept all chargers (configure in production)
+    return { status: RegistrationStatus.ACCEPTED, isNew: true };
+  } catch (error) {
+    console.error("Error checking charger registration:", error);
+    return { status: RegistrationStatus.ACCEPTED, isNew: true };
+  }
+}
+
+/**
+ * Create or update charger in database
+ * 
+ * @param {string} chargerId
+ * @param {object} data
+ */
+async function upsertCharger(chargerId, data) {
+  try {
+    await prisma.charger.upsert({
+      where: { id: chargerId },
+      create: {
+        id: chargerId,
+        serialNumber: data.chargePointSerialNumber,
+        vendor: data.chargePointVendor,
+        model: data.chargePointModel,
+        firmwareVersion: data.firmwareVersion,
+        status: "AVAILABLE",
+        connectionState: "CONNECTED",
+        lastHeartbeat: new Date(),
+        lastSeen: new Date(),
+        isRegistered: data.registrationResult.isNew ? false : true,
+        registeredAt: data.registrationResult.isNew ? null : new Date(),
+      },
+      update: {
+        vendor: data.chargePointVendor,
+        model: data.chargePointModel,
+        firmwareVersion: data.firmwareVersion,
+        status: "AVAILABLE",
+        connectionState: "CONNECTED",
+        lastHeartbeat: new Date(),
+        lastSeen: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error upserting charger:", error);
+  }
+}
+
+//data transfer
+import { sendCallResult } from "../messageQueue.js";
+
+/**
+ * OCPP DataTransfer Handler
+ * 
+ * DataTransfer allows vendor-specific messages to be exchanged between
+ * the Charge Point and Central System.
+ * 
+ * Request: { vendorId: string, messageId?: string, data?: string }
+ * Response: { status: "Accepted"|"Rejected"|"UnknownMessageId"|"UnknownVendorId", data?: string }
+ */
+export default async function dataTransfer(ws, messageId, chargerId, payload) {
+  const { vendorId, messageId: vendorMessageId, data } = payload;
+
+  console.log(`[DATA] ${chargerId} vendor: ${vendorId}, message: ${vendorMessageId}`);
+
+  // Log the data for debugging
+  if (data) {
+    try {
+      const parsedData = JSON.parse(data);
+      console.log(`[DATA] Payload:`, parsedData);
+    } catch {
+      console.log(`[DATA] Payload (raw):`, data);
+    }
+  }
+
+  // Handle known vendor-specific messages
+  const response = await handleVendorMessage(vendorId, vendorMessageId, data, chargerId);
+
+  sendCallResult(ws, messageId, response);
+}
+
+/**
+ * Handle vendor-specific messages
+ * 
+ * @param {string} vendorId
+ * @param {string} messageId
+ * @param {string} data
+ * @param {string} chargerId
+ * @returns {object} Response
+ */
+async function handleVendorMessage(vendorId, messageId, data, chargerId) {
+  // Add vendor-specific handlers here
+  // Example: Handle messages from specific charger manufacturers
+
+  switch (vendorId) {
+    case "com.example.vendor":
+      // Handle example vendor messages
+      return {
+        status: "Accepted",
+        data: JSON.stringify({ received: true }),
+      };
+
+    default:
+      // Accept unknown vendors but indicate it
+      console.log(`[DATA] Unknown vendor: ${vendorId}`);
+      return {
+        status: "UnknownVendorId",
+      };
+  }
+}
+
+//heartBeat
+import { sendCallResult } from "../messageQueue.js";
+import { updateChargerState } from "../../services/chargerStore.service.js";
+import { ocppEvents } from "../ocppEvents.js";
+import prisma from "../../config/db.js";
+
+/**
+ * OCPP Heartbeat Handler
+ * 
+ * The Charge Point sends Heartbeat to let the Central System know it's still alive.
+ * The Central System responds with the current time.
+ * 
+ * Frequency: Configured in BootNotification response (interval field)
+ * 
+ * Request: {} (empty)
+ * Response: { currentTime: ISO8601 timestamp }
+ */
+export default async function heartbeat(ws, messageId, chargerId, payload) {
+  const currentTime = new Date();
+
+  // Update charger state
+  updateChargerState(chargerId, {
+    lastHeartbeat: currentTime,
+    connectionStatus: "Connected",
+  });
+
+  // Emit event
+  ocppEvents.emitHeartbeat(chargerId);
+
+  // Update database (async, non-blocking)
+  updateChargerHeartbeat(chargerId, currentTime).catch((err) => {
+    console.error(`Failed to update heartbeat in DB for ${chargerId}:`, err.message);
+  });
+
+  // Send response with current time
+  sendCallResult(ws, messageId, {
+    currentTime: currentTime.toISOString(),
+  });
+}
+
+/**
+ * Update charger heartbeat in database
+ */
+async function updateChargerHeartbeat(chargerId, timestamp) {
+  await prisma.charger.updateMany({
+    where: { id: chargerId },
+    data: {
+      lastHeartbeat: timestamp,
+      lastSeen: timestamp,
+      connectionState: "CONNECTED",
+    },
+  });
+}
+
+//index.js
+import { sendCallResult, sendCallError } from "../messageQueue.js";
+import { ErrorCode, CPtoCSAction } from "../ocppConstants.js";
+
+// Import handlers
+import bootNotification from "./bootNotification.js";
+import heartbeat from "./heartbeat.js";
+import authorize from "./authorize.js";
+import statusNotification from "./statusNotification.js";
+import startTransaction from "./startTransaction.js";
+import stopTransaction from "./stopTransaction.js";
+import meterValues from "./meterValues.js";
+import dataTransfer from "./dataTransfer.js";
+
+/**
+ * OCPP Message Handler Router
+ * 
+ * Routes incoming OCPP CALL messages to appropriate handlers.
+ * All handlers receive: (ws, messageId, chargerId, payload)
+ */
+
+// Handler registry
+const handlers = {
+  [CPtoCSAction.BOOT_NOTIFICATION]: bootNotification,
+  [CPtoCSAction.HEARTBEAT]: heartbeat,
+  [CPtoCSAction.AUTHORIZE]: authorize,
+  [CPtoCSAction.STATUS_NOTIFICATION]: statusNotification,
+  [CPtoCSAction.START_TRANSACTION]: startTransaction,
+  [CPtoCSAction.STOP_TRANSACTION]: stopTransaction,
+  [CPtoCSAction.METER_VALUES]: meterValues,
+  [CPtoCSAction.DATA_TRANSFER]: dataTransfer,
+  [CPtoCSAction.DIAGNOSTICS_STATUS_NOTIFICATION]: handleDiagnosticsStatus,
+  [CPtoCSAction.FIRMWARE_STATUS_NOTIFICATION]: handleFirmwareStatus,
+};
+
+/**
+ * Handle incoming OCPP message
+ * 
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {string} chargerId - Charger identifier
+ * @param {string} messageId - OCPP message ID
+ * @param {string} action - OCPP action name
+ * @param {object} payload - Message payload
+ */
+export async function handleOcppMessage(ws, chargerId, messageId, action, payload) {
+  const handler = handlers[action];
+
+  if (!handler) {
+    console.warn(`⚠️ Unknown OCPP action: ${action} from ${chargerId}`);
+    sendCallError(
+      ws,
+      messageId,
+      ErrorCode.NOT_IMPLEMENTED,
+      `Action ${action} is not implemented`
+    );
+    return;
+  }
+
+  try {
+    await handler(ws, messageId, chargerId, payload);
+  } catch (error) {
+    console.error(`❌ Handler error for ${action} from ${chargerId}:`, error);
+    sendCallError(
+      ws,
+      messageId,
+      ErrorCode.INTERNAL_ERROR,
+      error.message
+    );
+  }
+}
+
+/**
+ * Handle DiagnosticsStatusNotification
+ * Simple acknowledgment - just log and respond
+ */
+async function handleDiagnosticsStatus(ws, messageId, chargerId, payload) {
+  console.log(`[DIAG] ${chargerId}: ${payload.status}`);
+  sendCallResult(ws, messageId, {});
+}
+
+/**
+ * Handle FirmwareStatusNotification
+ * Simple acknowledgment - just log and respond
+ */
+async function handleFirmwareStatus(ws, messageId, chargerId, payload) {
+  console.log(`[FW] ${chargerId}: ${payload.status}`);
+  sendCallResult(ws, messageId, {});
+}
+
+export default { handleOcppMessage };
+
+//meterValues
+import { sendCallResult } from "../messageQueue.js";
+import { Measurand } from "../ocppConstants.js";
+import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
+import { ocppEvents } from "../ocppEvents.js";
+import sessionService from "../../services/session.service.js";
+import billingService from "../../services/billing.service.js";
+
+/**
+ * OCPP MeterValues Handler
+ * 
+ * Sent by the Charge Point during a charging session to report meter readings.
+ * 
+ * Request: {
+ *   connectorId: number,
+ *   transactionId?: number,
+ *   meterValue: [{
+ *     timestamp: ISO8601,
+ *     sampledValue: [{
+ *       value: string,
+ *       context?: string,
+ *       format?: string,
+ *       measurand?: string,
+ *       phase?: string,
+ *       location?: string,
+ *       unit?: string
+ *     }]
+ *   }]
+ * }
+ * 
+ * Response: {} (empty)
+ */
+export default async function meterValues(ws, messageId, chargerId, payload) {
+  const { connectorId, transactionId, meterValue } = payload;
+
+  // Validate payload
+  if (!meterValue || meterValue.length === 0) {
+    console.warn(`[METER] ${chargerId}: Empty meterValue`);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
+  // Get charger state
+  const chargerState = getChargerState(chargerId);
+  const activeTransactionId = chargerState?.transactionId || transactionId?.toString();
+
+  if (!activeTransactionId) {
+    console.warn(`[METER] ${chargerId}: No active transaction`);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
+  // Extract meter readings
+  const readings = extractMeterReadings(meterValue);
+
+  if (!readings.energy && readings.energy !== 0) {
+    console.warn(`[METER] ${chargerId}: No energy reading found`);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
+  const energyWh = readings.energy;
+
+  // Update meterStart if this is the first reading
+  if (chargerState && !chargerState.meterStart) {
+    chargerState.meterStart = energyWh;
+    updateChargerState(chargerId, { meterStart: energyWh });
+  }
+
+  // Update last meter value
+  updateChargerState(chargerId, {
+    lastMeterValue: energyWh,
+    lastMeterTime: new Date(),
+  });
+
+  // Calculate energy used in this session
+  const energyUsed = chargerState?.meterStart 
+    ? energyWh - chargerState.meterStart 
+    : 0;
+
+  // Emit event for billing (handled by event listener)
+  ocppEvents.emitMeterUpdate({
+    chargerId,
+    connectorId,
+    transactionId: activeTransactionId,
+    meterWh: energyWh,
+    energyUsedWh: energyUsed,
+    readings,
+  });
+
+  // Process billing directly (in addition to event)
+  try {
+    const billingResult = await billingService.processMeterValuesBilling({
+      chargerId,
+      transactionId: activeTransactionId,
+      currentMeterWh: energyWh,
+    });
+
+    if (billingResult.success && !billingResult.skipped && !billingResult.duplicate) {
+      console.log(
+        `[METER] ${chargerId}: ${energyWh}Wh (+${billingResult.incrementalWh}Wh), ` +
+        `Billed: LKR ${billingResult.incrementalCost}, Balance: LKR ${billingResult.newBalance}`
+      );
+    } else if (billingResult.insufficientFunds) {
+      console.log(
+        `[METER] ${chargerId}: ${energyWh}Wh - INSUFFICIENT FUNDS ` +
+        `(grace: ${billingResult.graceActive ? 'active' : 'started'})`
+      );
+    }
+  } catch (error) {
+    console.error(`[METER] Billing error for ${chargerId}:`, error.message);
+  }
+
+  // Update session in database
+  try {
+    await sessionService.updateSessionMeter(activeTransactionId, energyWh);
+  } catch (error) {
+    console.error(`[METER] Session update error:`, error.message);
+  }
+
+  // Send empty response
+  sendCallResult(ws, messageId, {});
+}
+
+/**
+ * Extract relevant meter readings from meterValue array
+ * 
+ * @param {array} meterValue
+ * @returns {object} Extracted readings
+ */
+function extractMeterReadings(meterValue) {
+  const readings = {
+    energy: null,
+    power: null,
+    current: null,
+    voltage: null,
+    soc: null,
+    temperature: null,
+  };
+
+  // Get the most recent meter value entry
+  const lastEntry = meterValue[meterValue.length - 1];
+  
+  if (!lastEntry || !lastEntry.sampledValue) {
+    return readings;
+  }
+
+  for (const sample of lastEntry.sampledValue) {
+    const measurand = sample.measurand || Measurand.ENERGY_ACTIVE_IMPORT_REGISTER;
+    const value = parseFloat(sample.value);
+
+    if (isNaN(value)) continue;
+
+    switch (measurand) {
+      case Measurand.ENERGY_ACTIVE_IMPORT_REGISTER:
+      case "Energy.Active.Import.Register":
+        readings.energy = value;
+        break;
+
+      case Measurand.POWER_ACTIVE_IMPORT:
+      case "Power.Active.Import":
+        readings.power = value;
+        break;
+
+      case Measurand.CURRENT_IMPORT:
+      case "Current.Import":
+        readings.current = value;
+        break;
+
+      case Measurand.VOLTAGE:
+      case "Voltage":
+        readings.voltage = value;
+        break;
+
+      case Measurand.SOC:
+      case "SoC":
+        readings.soc = value;
+        break;
+
+      case Measurand.TEMPERATURE:
+      case "Temperature":
+        readings.temperature = value;
+        break;
+
+      default:
+        // If no measurand specified and this is the first value, assume it's energy
+        if (!sample.measurand && readings.energy === null) {
+          readings.energy = value;
+        }
+    }
+  }
+
+  return readings;
+}
+
+//startTransaction
+import { sendCallResult } from "../messageQueue.js";
+import { AuthorizationStatus } from "../ocppConstants.js";
+import { updateChargerState } from "../../services/chargerStore.service.js";
+import { generateTransactionId } from "../../utils/generateTransactionId.js";
+import { ocppEvents } from "../ocppEvents.js";
+import sessionService from "../../services/session.service.js";
+import billingService from "../../services/billing.service.js";
+import bookingService from "../../services/booking.service.js";
+import connectorLockService from "../../services/connectorLock.service.js";
+import prisma from "../../config/db.js";
+import Decimal from "decimal.js";
+
+/**
+ * OCPP StartTransaction Handler
+ * 
+ * Sent by the Charge Point when a charging session starts.
+ * 
+ * Booking Integration:
+ * - Validates if user has a booking OR if walk-in is allowed
+ * - Marks booking as used if applicable
+ * - Acquires connector lock for the session
+ * 
+ * Request: {
+ *   connectorId: number,
+ *   idTag: string,
+ *   meterStart: number (Wh),
+ *   reservationId?: number,
+ *   timestamp: ISO8601
+ * }
+ * 
+ * Response: {
+ *   transactionId: number,
+ *   idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? }
+ * }
+ */
+export default async function startTransaction(ws, messageId, chargerId, payload) {
+  const {
+    connectorId,
+    idTag,
+    meterStart,
+    reservationId,
+    timestamp,
+  } = payload;
+
+  const startTime = timestamp ? new Date(timestamp) : new Date();
+
+  console.log(`[START] ${chargerId}#${connectorId}: idTag=${idTag}, meter=${meterStart}Wh`);
+
+  // Generate unique transaction ID
+  const transactionId = generateTransactionId(chargerId);
+
+  // Check authorization
+  const authResult = await checkStartAuthorization(chargerId, connectorId, idTag, reservationId);
+
+  if (authResult.status !== AuthorizationStatus.ACCEPTED) {
+    console.log(`[START] Rejected: ${authResult.status} - ${authResult.reason || ''}`);
+    sendCallResult(ws, messageId, {
+      transactionId: 0,
+      idTagInfo: {
+        status: authResult.status,
+      },
+    });
+    return;
+  }
+
+  // Get pricing for this charger
+  const pricing = await billingService.getPricingForCharger(chargerId);
+
+  // Resolve user from idTag
+  const userId = await resolveUserFromIdTag(idTag);
+
+  // Acquire connector lock for this charging session
+  const lockResult = await connectorLockService.markChargingActive(
+    chargerId,
+    connectorId,
+    transactionId
+  );
+
+  if (!lockResult.acquired) {
+    console.log(`[START] Connector lock failed: ${lockResult.reason}`);
+    // Still allow - lock is for booking system, not hard requirement
+  }
+
+  // Create session in database
+  const { session, duplicate } = await sessionService.createSession({
+    chargerId,
+    connectorId,
+    transactionId,
+    idTag,
+    userId,
+    meterStart,
+    timestamp: startTime,
+    pricePerKwh: pricing?.pricePerKwh,
+  });
+
+  if (duplicate) {
+    console.log(`[START] Duplicate transaction: ${transactionId}`);
+  }
+
+  // Update charger state
+  updateChargerState(chargerId, {
+    status: "Charging",
+    transactionId,
+    connectorId,
+    meterStart,
+    lastMeterValue: meterStart,
+    idTag,
+    userId,
+    sessionStartTime: startTime,
+    bookingId: authResult.bookingId || null,
+  });
+
+  // Mark booking as used if applicable
+  if (authResult.bookingId) {
+    await bookingService.markBookingUsed(authResult.bookingId);
+    console.log(`[START] Booking ${authResult.bookingId} marked as used`);
+  }
+
+  // Emit event
+  ocppEvents.emitSessionStarted({
+    chargerId,
+    connectorId,
+    transactionId,
+    idTag,
+    userId,
+    meterStart,
+    startTime,
+    bookingId: authResult.bookingId,
+    startType: authResult.type, // BOOKING or WALKIN
+  });
+
+  // Send response
+  sendCallResult(ws, messageId, {
+    transactionId,
+    idTagInfo: {
+      status: AuthorizationStatus.ACCEPTED,
+      expiryDate: getExpiryDate(24),
+    },
+  });
+
+  console.log(`✅ [START] Transaction ${transactionId} started (${authResult.type})`);
+}
+
+/**
+ * Check authorization for starting a transaction
+ * Includes booking validation
+ */
+async function checkStartAuthorization(chargerId, connectorId, idTag, reservationId) {
+  // First, validate booking/walk-in status
+  const bookingValidation = await bookingService.validateBookingForStart(
+    chargerId,
+    connectorId,
+    idTag
+  );
+
+  if (!bookingValidation.allowed) {
+    return {
+      status: AuthorizationStatus.BLOCKED,
+      reason: bookingValidation.reason,
+      type: bookingValidation.type,
+    };
+  }
+
+  // If there's a reservation ID, verify it matches
+  if (reservationId) {
+    const reservationValid = await validateReservation(chargerId, connectorId, reservationId, idTag);
+    if (!reservationValid.valid) {
+      return {
+        status: AuthorizationStatus.INVALID,
+        reason: reservationValid.reason,
+        type: "INVALID_RESERVATION",
+      };
+    }
+  }
+
+  // Check user authorization
+  const userAuth = await checkUserAuthorization(idTag);
+  if (userAuth.status !== AuthorizationStatus.ACCEPTED) {
+    return userAuth;
+  }
+
+  return {
+    status: AuthorizationStatus.ACCEPTED,
+    type: bookingValidation.type, // BOOKING or WALKIN
+    bookingId: bookingValidation.bookingId,
+  };
+}
+
+/**
+ * Validate OCPP reservation ID
+ */
+async function validateReservation(chargerId, connectorId, reservationId, idTag) {
+  // Find booking by hashed reservation ID
+  // This is a reverse lookup - in production you might store the reservationId in the booking
+  
+  const connector = await prisma.connector.findFirst({
+    where: { chargerId, connectorId },
+  });
+
+  if (!connector) {
+    return { valid: true }; // No connector tracking, allow
+  }
+
+  const activeBooking = await prisma.booking.findFirst({
+    where: {
+      connectorId: connector.id,
+      status: "ACTIVE",
+    },
+  });
+
+  if (!activeBooking) {
+    return { valid: true }; // No booking, allow
+  }
+
+  // Check if the user matches the booking
+  const userId = await resolveUserFromIdTag(idTag);
+  
+  if (userId && activeBooking.userId === userId) {
+    return { valid: true };
+  }
+
+  return {
+    valid: false,
+    reason: "Reservation does not match user",
+  };
+}
+
+/**
+ * Check user-level authorization
+ */
+async function checkUserAuthorization(idTag) {
+  // Accept known idTag patterns
+  if (idTag.startsWith("USER") || idTag.startsWith("RFID")) {
+    return {
+      status: AuthorizationStatus.ACCEPTED,
+    };
+  }
+
+  // Check database for user
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { id: idTag },
+        { firebaseUid: idTag },
+      ],
+      isActive: true,
+    },
+    include: {
+      wallet: true,
+    },
+  });
+
+  if (!user) {
+    // For development, accept unknown tags
+    // In production, return INVALID
+    return {
+      status: AuthorizationStatus.ACCEPTED,
+    };
+  }
+
+  // Check for concurrent transactions (optional)
+  const activeSessions = await prisma.chargingSession.count({
+    where: {
+      userId: user.id,
+      endedAt: null,
+    },
+  });
+
+  if (activeSessions > 0) {
+    return {
+      status: AuthorizationStatus.CONCURRENT_TX,
+      reason: "User already has an active charging session",
+    };
+  }
+
+  // Check wallet balance - user cannot proceed if balance is 0
+  const wallet = user.wallet || await prisma.wallet.findUnique({
+    where: { userId: user.id },
+  });
+
+  if (!wallet) {
+    // Create wallet if it doesn't exist
+    await prisma.wallet.create({
+      data: {
+        userId: user.id,
+        balance: 0,
+        currency: "LKR",
+      },
+    });
+    return {
+      status: AuthorizationStatus.BLOCKED,
+      reason: "Insufficient wallet balance. Please top up your wallet.",
+    };
+  }
+
+  const balance = new Decimal(wallet.balance.toString());
+  
+  // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
+  if (balance.lte(0)) {
+    return {
+      status: AuthorizationStatus.BLOCKED,
+      reason: "Insufficient wallet balance. Please top up your wallet.",
+    };
+  }
+
+  return {
+    status: AuthorizationStatus.ACCEPTED,
+    userId: user.id,
+  };
+}
+
+/**
+ * Resolve user ID from idTag
+ */
+async function resolveUserFromIdTag(idTag) {
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { id: idTag },
+        { firebaseUid: idTag },
+      ],
+    },
+  });
+
+  return user?.id || null;
+}
+
+/**
+ * Get expiry date
+ */
+function getExpiryDate(hours) {
+  const date = new Date();
+  date.setHours(date.getHours() + hours);
+  return date.toISOString();
+}
+
+//statusNotification
+import { sendCallResult } from "../messageQueue.js";
+import { ChargePointStatus, ChargePointErrorCode } from "../ocppConstants.js";
+import { updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { ocppEvents } from "../ocppEvents.js";
+import prisma from "../../config/db.js";
+import sessionService from "../../services/session.service.js";
+
+/**
+ * OCPP StatusNotification Handler
+ * 
+ * Sent by the Charge Point when connector status changes.
+ * 
+ * Request: {
+ *   connectorId: number (0 = charger overall, 1+ = specific connector),
+ *   errorCode: ChargePointErrorCode,
+ *   info?: string,
+ *   status: ChargePointStatus,
+ *   timestamp?: ISO8601,
+ *   vendorId?: string,
+ *   vendorErrorCode?: string
+ * }
+ * 
+ * Response: {} (empty)
+ */
+export default async function statusNotification(ws, messageId, chargerId, payload) {
+  const {
+    connectorId,
+    errorCode,
+    info,
+    status,
+    timestamp,
+    vendorId,
+    vendorErrorCode,
+  } = payload;
+
+  const statusTime = timestamp ? new Date(timestamp) : new Date();
+
+  console.log(`[STATUS] ${chargerId}#${connectorId}: ${status} (${errorCode})`);
+
+  // Update in-memory state
+  updateChargerState(chargerId, {
+    status,
+    connectorId,
+    errorCode,
+    connectionStatus: "Connected",
+    lastStatusUpdate: statusTime,
+  });
+
+  // Handle specific status changes
+  await handleStatusChange(chargerId, connectorId, status, errorCode, info);
+
+  // Emit event
+  ocppEvents.emitStatusChanged(chargerId, connectorId, status, errorCode, info);
+
+  // Update database
+  await updateConnectorStatus(chargerId, connectorId, status, errorCode);
+
+  // Send empty response
+  sendCallResult(ws, messageId, {});
+}
+
+/**
+ * Handle specific status changes
+ */
+async function handleStatusChange(chargerId, connectorId, status, errorCode, info) {
+  // Handle faults
+  if (status === ChargePointStatus.FAULTED || errorCode !== ChargePointErrorCode.NO_ERROR) {
+    await handleFault(chargerId, connectorId, status, errorCode, info);
+  }
+
+  // Handle finishing (charging completed, unplugged)
+  if (status === ChargePointStatus.FINISHING) {
+    console.log(`[STATUS] ${chargerId}#${connectorId}: Finishing - cable may be unplugged`);
+  }
+
+  // Handle available (ready for new session)
+  if (status === ChargePointStatus.AVAILABLE) {
+    console.log(`[STATUS] ${chargerId}#${connectorId}: Available for new session`);
+  }
+}
+
+/**
+ * Handle charger fault
+ */
+async function handleFault(chargerId, connectorId, status, errorCode, info) {
+  console.warn(`⚠️ [FAULT] ${chargerId}#${connectorId}: ${errorCode} - ${info || 'No details'}`);
+
+  // Check for active session on this connector
+  const session = await sessionService.getActiveSession(chargerId);
+
+  if (session) {
+    // Emit fault event for billing to handle (partial refund, etc.)
+    ocppEvents.emitSessionFaulted({
+      chargerId,
+      connectorId,
+      transactionId: session.transactionId,
+      errorCode,
+      info,
+    });
+  }
+}
+
+/**
+ * Update connector status in database
+ */
+async function updateConnectorStatus(chargerId, connectorId, status, errorCode) {
+  try {
+    // Update charger overall status if connectorId is 0
+    if (connectorId === 0) {
+      await prisma.charger.updateMany({
+        where: { id: chargerId },
+        data: {
+          status: mapStatus(status),
+          lastSeen: new Date(),
+        },
+      });
+      return;
+    }
+
+    // Update or create connector
+    await prisma.connector.upsert({
+      where: {
+        chargerId_connectorId: {
+          chargerId,
+          connectorId,
+        },
+      },
+      create: {
+        chargerId,
+        connectorId,
+        status: mapConnectorStatus(status),
+        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
+      },
+      update: {
+        status: mapConnectorStatus(status),
+        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
+      },
+    });
+
+    // Also update charger status based on connector
+    await prisma.charger.updateMany({
+      where: { id: chargerId },
+      data: {
+        status: mapStatus(status),
+        lastSeen: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error updating connector status:", error);
+  }
+}
+
+/**
+ * Map OCPP status to Prisma enum
+ */
+function mapStatus(ocppStatus) {
+  const mapping = {
+    [ChargePointStatus.AVAILABLE]: "AVAILABLE",
+    [ChargePointStatus.PREPARING]: "PREPARING",
+    [ChargePointStatus.CHARGING]: "CHARGING",
+    [ChargePointStatus.SUSPENDED_EVSE]: "SUSPENDED_EVSE",
+    [ChargePointStatus.SUSPENDED_EV]: "SUSPENDED_EV",
+    [ChargePointStatus.FINISHING]: "FINISHING",
+    [ChargePointStatus.RESERVED]: "RESERVED",
+    [ChargePointStatus.UNAVAILABLE]: "UNAVAILABLE",
+    [ChargePointStatus.FAULTED]: "FAULTED",
+  };
+
+  return mapping[ocppStatus] || "UNAVAILABLE";
+}
+
+/**
+ * Map OCPP status to Connector Prisma enum
+ */
+function mapConnectorStatus(ocppStatus) {
+  return mapStatus(ocppStatus); // Same mapping for now
+}
+
+//stopTransaction
+import { sendCallResult } from "../messageQueue.js";
+import { AuthorizationStatus } from "../ocppConstants.js";
+import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
+import { ocppEvents } from "../ocppEvents.js";
+import sessionService from "../../services/session.service.js";
+import billingService from "../../services/billing.service.js";
+import notificationService from "../../services/notification.service.js";
+import connectorLockService from "../../services/connectorLock.service.js";
+
+/**
+ * OCPP StopTransaction Handler
+ * 
+ * Sent by the Charge Point when a charging session ends.
+ * 
+ * Request: {
+ *   idTag?: string,
+ *   meterStop: number (Wh),
+ *   timestamp: ISO8601,
+ *   transactionId: number,
+ *   reason?: StopReason,
+ *   transactionData?: MeterValue[]
+ * }
+ * 
+ * Response: {
+ *   idTagInfo?: { status: AuthorizationStatus }
+ * }
+ */
+export default async function stopTransaction(ws, messageId, chargerId, payload) {
+  const {
+    idTag,
+    meterStop,
+    timestamp,
+    transactionId,
+    reason,
+    transactionData,
+  } = payload;
+
+  const stopTime = timestamp ? new Date(timestamp) : new Date();
+
+  console.log(`[STOP] ${chargerId}: txId=${transactionId}, meter=${meterStop}Wh, reason=${reason || 'Normal'}`);
+
+  // Get charger state to find the transaction
+  const chargerState = getChargerState(chargerId);
+  const activeTransactionId = chargerState?.transactionId || transactionId?.toString();
+
+  if (!activeTransactionId) {
+    console.warn(`[STOP] No active transaction found for ${chargerId}`);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
+  try {
+    // Process any remaining meter values from transactionData
+    if (transactionData && transactionData.length > 0) {
+      await processTransactionData(chargerId, activeTransactionId, transactionData);
+    }
+
+    // Process final billing for any unbilled energy
+    try {
+      await billingService.processMeterValuesBilling({
+        chargerId,
+        transactionId: activeTransactionId,
+        currentMeterWh: meterStop,
+      });
+    } catch (billingError) {
+      // Log but continue - don't fail stop transaction for billing errors
+      console.error(`[STOP] Final billing error (continuing):`, billingError.message);
+    }
+
+    // Finalize session in database
+    const { session, alreadyFinalized, notFound } = await sessionService.finalizeSession({
+      transactionId: activeTransactionId,
+      meterStop,
+      timestamp: stopTime,
+      reason,
+      idTag,
+    });
+
+    if (notFound) {
+      console.warn(`[STOP] Session ${activeTransactionId} not found in database`);
+    } else if (alreadyFinalized) {
+      console.log(`[STOP] Session ${activeTransactionId} was already finalized`);
+    }
+
+    // Finalize billing (clears grace period, calculates final cost)
+    try {
+      await billingService.finalizeSessionBilling(activeTransactionId);
+    } catch (finalizeBillingError) {
+      console.error(`[STOP] Finalize billing error:`, finalizeBillingError.message);
+    }
+
+    // Get final session data for notification
+    const finalSession = await sessionService.getSessionByTransactionId(activeTransactionId);
+
+    // Calculate session duration
+    const duration = finalSession
+      ? stopTime.getTime() - finalSession.startedAt.getTime()
+      : 0;
+
+    // Send completion notification (don't await - fire and forget)
+    if (finalSession?.userId) {
+      notificationService.sendChargingComplete({
+        userId: finalSession.userId,
+        transactionId: activeTransactionId,
+        energyUsedWh: finalSession.energyUsedWh || 0,
+        totalCost: finalSession.totalCost?.toString() || "0.00",
+        duration,
+      }).catch(err => console.error(`[STOP] Notification error:`, err.message));
+    }
+
+    // Emit event
+    ocppEvents.emitSessionStopped({
+      chargerId,
+      transactionId: activeTransactionId,
+      meterStop,
+      reason,
+      stopTime,
+      energyUsed: finalSession?.energyUsedWh || 0,
+      totalCost: finalSession?.totalCost?.toString() || "0.00",
+    });
+
+    // Release connector lock
+    if (chargerState?.connectorId) {
+      await connectorLockService.markChargingComplete(
+        chargerId,
+        chargerState.connectorId,
+        activeTransactionId
+      ).catch(err => console.error(`[STOP] Lock release error:`, err.message));
+    }
+
+    // Reset charger state
+    updateChargerState(chargerId, {
+      status: "Available",
+      transactionId: null,
+      meterStart: null,
+      lastMeterValue: null,
+      idTag: null,
+      userId: null,
+      sessionStartTime: null,
+      bookingId: null,
+    });
+
+    console.log(`✅ [STOP] Transaction ${activeTransactionId} completed: ` +
+      `${((meterStop - (chargerState?.meterStart || 0)) / 1000).toFixed(2)} kWh, ` +
+      `LKR ${finalSession?.totalCost?.toString() || '0.00'}`
+    );
+
+  } catch (error) {
+    // Log full error details for debugging
+    console.error(`[STOP] Error processing stop transaction:`, {
+      transactionId: activeTransactionId,
+      error: error.message,
+      stack: error.stack,
+    });
+    
+    // Still try to reset charger state to prevent stuck state
+    updateChargerState(chargerId, {
+      status: "Available",
+      transactionId: null,
+    });
+  }
+
+  // Send response
+  // Include idTagInfo if idTag was provided
+  const response = {};
+  if (idTag) {
+    response.idTagInfo = {
+      status: AuthorizationStatus.ACCEPTED,
+    };
+  }
+
+  sendCallResult(ws, messageId, response);
+}
+
+/**
+ * Process transactionData (historical meter values)
+ * 
+ * Some chargers send all meter values collected during the session
+ * in the StopTransaction message.
+ */
+async function processTransactionData(chargerId, transactionId, transactionData) {
+  if (!transactionData || transactionData.length === 0) {
+    return;
+  }
+
+  console.log(`[STOP] Processing ${transactionData.length} historical meter values`);
+
+  // Process each meter value entry
+  for (const meterValue of transactionData) {
+    if (!meterValue.sampledValue) continue;
+
+    // Find energy reading
+    const energyValue = meterValue.sampledValue.find(
+      (v) => v.measurand === "Energy.Active.Import.Register" || !v.measurand
+    );
+
+    if (energyValue) {
+      const meterWh = parseInt(energyValue.value);
+      
+      if (isNaN(meterWh)) {
+        console.warn(`[STOP] Invalid meter value: ${energyValue.value}`);
+        continue;
+      }
+      
+      // Process billing for this reading
+      // Idempotency key based on timestamp ensures no duplicates
+      try {
+        await billingService.processMeterValuesBilling({
+          chargerId,
+          transactionId,
+          currentMeterWh: meterWh,
+        });
+      } catch (error) {
+        console.error(`[STOP] Historical billing error:`, error.message);
+        // Continue processing other values
+      }
+    }
+  }
+}
+
+
+//messsageQuese
+import { v4 as uuidv4 } from "uuid";
+import { MessageType, ErrorCode } from "./ocppConstants.js";
+import ocppLoggingService from "../services/ocppLogging.service.js";
+
+/**
+ * OCPP Message Queue
+ * 
+ * Manages outgoing messages from Central System to Charge Points.
+ * Features:
+ * - Message ID tracking
+ * - Callback handling for responses
+ * - Timeout management
+ * - Message logging for audit
+ */
+
+// Pending messages waiting for response
+const pendingMessages = new Map();
+
+// Default timeout for responses (30 seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
+
+/**
+ * Send OCPP CALL message to charger and wait for response
+ * 
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {string} chargerId - Charger identifier
+ * @param {string} action - OCPP action name
+ * @param {object} payload - Message payload
+ * @param {object} options - Options (timeout, etc.)
+ * @returns {Promise<object>} Response payload
+ */
+export async function sendCall(ws, chargerId, action, payload, options = {}) {
+  const messageId = options.messageId || uuidv4();
+  const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
+
+  return new Promise((resolve, reject) => {
+    // Create timeout handler
+    const timeoutId = setTimeout(() => {
+      pendingMessages.delete(messageId);
+      logMessage(chargerId, "TIMEOUT", action, messageId, payload, null);
+      reject(new Error(`OCPP request timeout: ${action} (${messageId})`));
+    }, timeout);
+
+    // Store pending message with callbacks
+    pendingMessages.set(messageId, {
+      action,
+      chargerId,
+      timestamp: Date.now(),
+      timeoutId,
+      resolve: (response) => {
+        clearTimeout(timeoutId);
+        pendingMessages.delete(messageId);
+        logMessage(chargerId, "RESPONSE", action, messageId, payload, response);
+        resolve(response);
+      },
+      reject: (error) => {
+        clearTimeout(timeoutId);
+        pendingMessages.delete(messageId);
+        logMessage(chargerId, "ERROR", action, messageId, payload, error);
+        reject(error);
+      },
+    });
+
+    // Build OCPP CALL message [MessageType, MessageId, Action, Payload]
+    const message = [MessageType.CALL, messageId, action, payload];
+
+    try {
+      ws.send(JSON.stringify(message));
+      logMessage(chargerId, "CALL", action, messageId, payload, null);
+    } catch (error) {
+      clearTimeout(timeoutId);
+      pendingMessages.delete(messageId);
+      reject(error);
+    }
+  });
+}
+
+/**
+ * Send OCPP CALL message without waiting for response (fire and forget)
+ * 
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {string} chargerId - Charger identifier
+ * @param {string} action - OCPP action name
+ * @param {object} payload - Message payload
+ * @returns {string} Message ID
+ */
+export function sendCallNoWait(ws, chargerId, action, payload) {
+  const messageId = uuidv4();
+  const message = [MessageType.CALL, messageId, action, payload];
+
+  try {
+    ws.send(JSON.stringify(message));
+    logMessage(chargerId, "CALL", action, messageId, payload, null);
+    return messageId;
+  } catch (error) {
+    console.error(`Failed to send ${action} to ${chargerId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Handle incoming CALLRESULT message
+ * 
+ * @param {string} messageId - Original message ID
+ * @param {object} payload - Response payload
+ * @returns {boolean} Whether message was handled
+ */
+export function handleCallResult(messageId, payload) {
+  const pending = pendingMessages.get(messageId);
+
+  if (!pending) {
+    console.warn(`Received CALLRESULT for unknown message: ${messageId}`);
+    return false;
+  }
+
+  pending.resolve(payload);
+  return true;
+}
+
+/**
+ * Handle incoming CALLERROR message
+ * 
+ * @param {string} messageId - Original message ID
+ * @param {string} errorCode - OCPP error code
+ * @param {string} errorDescription - Error description
+ * @param {object} errorDetails - Additional error details
+ * @returns {boolean} Whether message was handled
+ */
+export function handleCallError(messageId, errorCode, errorDescription, errorDetails) {
+  const pending = pendingMessages.get(messageId);
+
+  if (!pending) {
+    console.warn(`Received CALLERROR for unknown message: ${messageId}`);
+    return false;
+  }
+
+  pending.reject({
+    code: errorCode,
+    description: errorDescription,
+    details: errorDetails,
+  });
+
+  return true;
+}
+
+/**
+ * Send OCPP CALLRESULT (response) message
+ * 
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {string} messageId - Original message ID
+ * @param {object} payload - Response payload
+ */
+export function sendCallResult(ws, messageId, payload) {
+  const message = [MessageType.CALLRESULT, messageId, payload];
+  ws.send(JSON.stringify(message));
+}
+
+/**
+ * Send OCPP CALLERROR message
+ * 
+ * @param {WebSocket} ws - WebSocket connection
+ * @param {string} messageId - Original message ID
+ * @param {string} errorCode - OCPP error code
+ * @param {string} errorDescription - Error description
+ * @param {object} errorDetails - Additional details
+ */
+export function sendCallError(ws, messageId, errorCode, errorDescription, errorDetails = {}) {
+  const message = [
+    MessageType.CALLERROR,
+    messageId,
+    errorCode,
+    errorDescription,
+    errorDetails,
+  ];
+  ws.send(JSON.stringify(message));
+}
+
+/**
+ * Cancel all pending messages for a charger (e.g., on disconnect)
+ * 
+ * @param {string} chargerId - Charger identifier
+ */
+export function cancelPendingMessages(chargerId) {
+  for (const [messageId, pending] of pendingMessages.entries()) {
+    if (pending.chargerId === chargerId) {
+      pending.reject(new Error("Charger disconnected"));
+    }
+  }
+}
+
+/**
+ * Get pending message count for debugging
+ */
+export function getPendingMessageCount() {
+  return pendingMessages.size;
+}
+
+/**
+ * Log OCPP message for audit
+ * 
+ * @param {string} chargerId
+ * @param {string} direction - CALL, RESPONSE, ERROR, TIMEOUT
+ * @param {string} action
+ * @param {string} messageId
+ * @param {object} payload
+ * @param {object} response
+ */
+async function logMessage(chargerId, direction, action, messageId, payload, response) {
+  const timestamp = new Date().toISOString();
+  
+  // Console logging
+  const arrow = direction === "CALL" ? "→" : "←";
+  console.log(`[OCPP] ${timestamp} ${chargerId} ${arrow} ${action} (${messageId})`);
+
+  // Database logging (async, non-blocking)
+  try {
+    if (direction === "CALL") {
+      // Log outgoing CALL message
+      await ocppLoggingService.logOutgoingMessage(chargerId, [
+        MessageType.CALL,
+        messageId,
+        action,
+        payload,
+      ]);
+    } else if (direction === "RESPONSE" && response) {
+      // Update original log with response
+      const responseTimeMs = Date.now() - (pendingMessages.get(messageId)?.timestamp || Date.now());
+      await ocppLoggingService.updateLogWithResponse(messageId, response, responseTimeMs);
+    } else if (direction === "ERROR" && response) {
+      // Log error response
+      await ocppLoggingService.updateLogWithResponse(messageId, {
+        error: response.code,
+        description: response.description,
+        details: response.details,
+      }, 0);
+    }
+  } catch (error) {
+    // Don't fail on logging errors
+    console.error("Failed to log OCPP message:", error.message);
+  }
+}
+
+export default {
+  sendCall,
+  sendCallNoWait,
+  handleCallResult,
+  handleCallError,
+  sendCallResult,
+  sendCallError,
+  cancelPendingMessages,
+  getPendingMessageCount,
+};
+
+//ocpp constant
+/**
+ * OCPP 1.6 Constants and Enums
+ * Reference: OCPP 1.6 Edition 2 Specification
+ */
+
+// OCPP Message Types
+export const MessageType = {
+  CALL: 2,        // Request from client to server or server to client
+  CALLRESULT: 3,  // Response to a CALL
+  CALLERROR: 4,   // Error response to a CALL
+};
+
+// OCPP Error Codes
+export const ErrorCode = {
+  NOT_IMPLEMENTED: "NotImplemented",
+  NOT_SUPPORTED: "NotSupported",
+  INTERNAL_ERROR: "InternalError",
+  PROTOCOL_ERROR: "ProtocolError",
+  SECURITY_ERROR: "SecurityError",
+  FORMATION_VIOLATION: "FormationViolation",
+  PROPERTY_CONSTRAINT_VIOLATION: "PropertyConstraintViolation",
+  OCCURRENCE_CONSTRAINT_VIOLATION: "OccurrenceConstraintViolation",
+  TYPE_CONSTRAINT_VIOLATION: "TypeConstraintViolation",
+  GENERIC_ERROR: "GenericError",
+};
+
+// Charge Point Status (StatusNotification)
+export const ChargePointStatus = {
+  AVAILABLE: "Available",
+  PREPARING: "Preparing",
+  CHARGING: "Charging",
+  SUSPENDED_EVSE: "SuspendedEVSE",
+  SUSPENDED_EV: "SuspendedEV",
+  FINISHING: "Finishing",
+  RESERVED: "Reserved",
+  UNAVAILABLE: "Unavailable",
+  FAULTED: "Faulted",
+};
+
+// Charge Point Error Codes
+export const ChargePointErrorCode = {
+  CONNECTOR_LOCK_FAILURE: "ConnectorLockFailure",
+  EV_COMMUNICATION_ERROR: "EVCommunicationError",
+  GROUND_FAILURE: "GroundFailure",
+  HIGH_TEMPERATURE: "HighTemperature",
+  INTERNAL_ERROR: "InternalError",
+  LOCAL_LIST_CONFLICT: "LocalListConflict",
+  NO_ERROR: "NoError",
+  OTHER_ERROR: "OtherError",
+  OVER_CURRENT_FAILURE: "OverCurrentFailure",
+  POWER_METER_FAILURE: "PowerMeterFailure",
+  POWER_SWITCH_FAILURE: "PowerSwitchFailure",
+  READER_FAILURE: "ReaderFailure",
+  RESET_FAILURE: "ResetFailure",
+  UNDER_VOLTAGE: "UnderVoltage",
+  OVER_VOLTAGE: "OverVoltage",
+  WEAK_SIGNAL: "WeakSignal",
+};
+
+// Authorization Status
+export const AuthorizationStatus = {
+  ACCEPTED: "Accepted",
+  BLOCKED: "Blocked",
+  EXPIRED: "Expired",
+  INVALID: "Invalid",
+  CONCURRENT_TX: "ConcurrentTx",
+};
+
+// Registration Status (BootNotification response)
+export const RegistrationStatus = {
+  ACCEPTED: "Accepted",
+  PENDING: "Pending",
+  REJECTED: "Rejected",
+};
+
+// Remote Start/Stop Status
+export const RemoteStartStopStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+};
+
+// Reservation Status
+export const ReservationStatus = {
+  ACCEPTED: "Accepted",
+  FAULTED: "Faulted",
+  OCCUPIED: "Occupied",
+  REJECTED: "Rejected",
+  UNAVAILABLE: "Unavailable",
+};
+
+// Cancel Reservation Status
+export const CancelReservationStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+};
+
+// Reset Type
+export const ResetType = {
+  HARD: "Hard",
+  SOFT: "Soft",
+};
+
+// Reset Status
+export const ResetStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+};
+
+// Unlock Status
+export const UnlockStatus = {
+  UNLOCKED: "Unlocked",
+  UNLOCK_FAILED: "UnlockFailed",
+  NOT_SUPPORTED: "NotSupported",
+};
+
+// Stop Transaction Reason
+export const StopReason = {
+  EMERGENCY_STOP: "EmergencyStop",
+  EV_DISCONNECTED: "EVDisconnected",
+  HARD_RESET: "HardReset",
+  LOCAL: "Local",
+  OTHER: "Other",
+  POWER_LOSS: "PowerLoss",
+  REBOOT: "Reboot",
+  REMOTE: "Remote",
+  SOFT_RESET: "SoftReset",
+  UNLOCK_COMMAND: "UnlockCommand",
+  DE_AUTHORIZED: "DeAuthorized",
+};
+
+// Measurand types for MeterValues
+export const Measurand = {
+  ENERGY_ACTIVE_IMPORT_REGISTER: "Energy.Active.Import.Register",
+  ENERGY_ACTIVE_EXPORT_REGISTER: "Energy.Active.Export.Register",
+  ENERGY_REACTIVE_IMPORT_REGISTER: "Energy.Reactive.Import.Register",
+  ENERGY_REACTIVE_EXPORT_REGISTER: "Energy.Reactive.Export.Register",
+  ENERGY_ACTIVE_IMPORT_INTERVAL: "Energy.Active.Import.Interval",
+  ENERGY_ACTIVE_EXPORT_INTERVAL: "Energy.Active.Export.Interval",
+  POWER_ACTIVE_IMPORT: "Power.Active.Import",
+  POWER_ACTIVE_EXPORT: "Power.Active.Export",
+  POWER_REACTIVE_IMPORT: "Power.Reactive.Import",
+  POWER_REACTIVE_EXPORT: "Power.Reactive.Export",
+  CURRENT_IMPORT: "Current.Import",
+  CURRENT_EXPORT: "Current.Export",
+  CURRENT_OFFERED: "Current.Offered",
+  VOLTAGE: "Voltage",
+  FREQUENCY: "Frequency",
+  TEMPERATURE: "Temperature",
+  SOC: "SoC",
+  RPM: "RPM",
+};
+
+// OCPP Actions (Charge Point → Central System)
+export const CPtoCSAction = {
+  AUTHORIZE: "Authorize",
+  BOOT_NOTIFICATION: "BootNotification",
+  DATA_TRANSFER: "DataTransfer",
+  DIAGNOSTICS_STATUS_NOTIFICATION: "DiagnosticsStatusNotification",
+  FIRMWARE_STATUS_NOTIFICATION: "FirmwareStatusNotification",
+  HEARTBEAT: "Heartbeat",
+  METER_VALUES: "MeterValues",
+  START_TRANSACTION: "StartTransaction",
+  STATUS_NOTIFICATION: "StatusNotification",
+  STOP_TRANSACTION: "StopTransaction",
+};
+
+// OCPP Actions (Central System → Charge Point)
+export const CStoCPAction = {
+  CANCEL_RESERVATION: "CancelReservation",
+  CHANGE_AVAILABILITY: "ChangeAvailability",
+  CHANGE_CONFIGURATION: "ChangeConfiguration",
+  CLEAR_CACHE: "ClearCache",
+  CLEAR_CHARGING_PROFILE: "ClearChargingProfile",
+  DATA_TRANSFER: "DataTransfer",
+  GET_COMPOSITE_SCHEDULE: "GetCompositeSchedule",
+  GET_CONFIGURATION: "GetConfiguration",
+  GET_DIAGNOSTICS: "GetDiagnostics",
+  GET_LOCAL_LIST_VERSION: "GetLocalListVersion",
+  REMOTE_START_TRANSACTION: "RemoteStartTransaction",
+  REMOTE_STOP_TRANSACTION: "RemoteStopTransaction",
+  RESERVE_NOW: "ReserveNow",
+  RESET: "Reset",
+  SEND_LOCAL_LIST: "SendLocalList",
+  SET_CHARGING_PROFILE: "SetChargingProfile",
+  TRIGGER_MESSAGE: "TriggerMessage",
+  UNLOCK_CONNECTOR: "UnlockConnector",
+  UPDATE_FIRMWARE: "UpdateFirmware",
+};
+
+export default {
+  MessageType,
+  ErrorCode,
+  ChargePointStatus,
+  ChargePointErrorCode,
+  AuthorizationStatus,
+  RegistrationStatus,
+  RemoteStartStopStatus,
+  ReservationStatus,
+  CancelReservationStatus,
+  ResetType,
+  ResetStatus,
+  UnlockStatus,
+  StopReason,
+  Measurand,
+  CPtoCSAction,
+  CStoCPAction,
+};
+
+//ocpp events
+import { EventEmitter } from "events";
+
+/**
+ * OCPP Event Emitter
+ * 
+ * Internal event bus for OCPP-related events.
+ * Allows decoupling of OCPP handlers from billing, notifications, etc.
+ * 
+ * Events:
+ * - charger:connected - Charger WebSocket connected
+ * - charger:disconnected - Charger WebSocket disconnected
+ * - charger:booted - BootNotification received
+ * - charger:heartbeat - Heartbeat received
+ * - charger:statusChanged - Status changed
+ * - session:started - Charging session started
+ * - session:meterUpdate - MeterValues received
+ * - session:stopped - Charging session stopped
+ * - session:faulted - Charger fault during session
+ * - authorization:requested - Authorize request received
+ * - reservation:created - Reservation created
+ * - reservation:cancelled - Reservation cancelled
+ */
+
+class OcppEventEmitter extends EventEmitter {
+  constructor() {
+    super();
+    this.setMaxListeners(50); // Allow many subscribers
+  }
+
+  /**
+   * Emit charger connected event
+   */
+  emitChargerConnected(chargerId, metadata = {}) {
+    this.emit("charger:connected", {
+      chargerId,
+      timestamp: new Date(),
+      ...metadata,
+    });
+  }
+
+  /**
+   * Emit charger disconnected event
+   */
+  emitChargerDisconnected(chargerId, metadata = {}) {
+    this.emit("charger:disconnected", {
+      chargerId,
+      timestamp: new Date(),
+      ...metadata,
+    });
+  }
+
+  /**
+   * Emit charger booted event
+   */
+  emitChargerBooted(chargerId, bootData) {
+    this.emit("charger:booted", {
+      chargerId,
+      timestamp: new Date(),
+      vendor: bootData.chargePointVendor,
+      model: bootData.chargePointModel,
+      serialNumber: bootData.chargePointSerialNumber,
+      firmwareVersion: bootData.firmwareVersion,
+    });
+  }
+
+  /**
+   * Emit heartbeat event
+   */
+  emitHeartbeat(chargerId) {
+    this.emit("charger:heartbeat", {
+      chargerId,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit status changed event
+   */
+  emitStatusChanged(chargerId, connectorId, status, errorCode, info) {
+    this.emit("charger:statusChanged", {
+      chargerId,
+      connectorId,
+      status,
+      errorCode,
+      info,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit session started event
+   */
+  emitSessionStarted(data) {
+    this.emit("session:started", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit meter update event
+   */
+  emitMeterUpdate(data) {
+    this.emit("session:meterUpdate", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit session stopped event
+   */
+  emitSessionStopped(data) {
+    this.emit("session:stopped", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit session faulted event
+   */
+  emitSessionFaulted(data) {
+    this.emit("session:faulted", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit authorization requested event
+   */
+  emitAuthorizationRequested(chargerId, idTag) {
+    this.emit("authorization:requested", {
+      chargerId,
+      idTag,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit reservation created event
+   */
+  emitReservationCreated(data) {
+    this.emit("reservation:created", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+
+  /**
+   * Emit reservation cancelled event
+   */
+  emitReservationCancelled(data) {
+    this.emit("reservation:cancelled", {
+      ...data,
+      timestamp: new Date(),
+    });
+  }
+}
+
+// Singleton instance
+export const ocppEvents = new OcppEventEmitter();
+
+// Setup event listeners for billing integration
+export function setupEventListeners() {
+  // Log all events in development
+  if (process.env.NODE_ENV === "development") {
+    ocppEvents.on("charger:connected", (data) => {
+      console.log(`📡 [Event] Charger connected: ${data.chargerId}`);
+    });
+
+    ocppEvents.on("charger:disconnected", (data) => {
+      console.log(`📡 [Event] Charger disconnected: ${data.chargerId}`);
+    });
+
+    ocppEvents.on("session:started", (data) => {
+      console.log(`📡 [Event] Session started: ${data.transactionId}`);
+    });
+
+    ocppEvents.on("session:stopped", (data) => {
+      console.log(`📡 [Event] Session stopped: ${data.transactionId}`);
+    });
+  }
+
+  // Billing integration
+  ocppEvents.on("session:meterUpdate", async (data) => {
+    try {
+      const { processMeterValuesBilling } = await import("../services/billing.service.js");
+      await processMeterValuesBilling({
+        chargerId: data.chargerId,
+        transactionId: data.transactionId,
+        currentMeterWh: data.meterWh,
+      });
+    } catch (error) {
+      console.error("Billing integration error:", error.message);
+    }
+  });
+
+  // Handle faults with partial refund
+  ocppEvents.on("session:faulted", async (data) => {
+    try {
+      const { handleSessionFault } = await import("../services/session.service.js");
+      await handleSessionFault(data);
+    } catch (error) {
+      console.error("Session fault handling error:", error.message);
+    }
+  });
+}
+
+export default ocppEvents;
+
+//ocppServer
+import { WebSocketServer } from "ws";
+import { handleOcppMessage } from "./handlers/index.js";
+import { cancelPendingMessages, handleCallResult, handleCallError } from "./messageQueue.js";
+import { ocppEvents, setupEventListeners } from "./ocppEvents.js";
+import { MessageType, ErrorCode } from "./ocppConstants.js";
+import { sendCallError } from "./messageQueue.js";
+import prisma from "../config/db.js";
+import sessionService from "../services/session.service.js";
+import ocppLoggingService from "../services/ocppLogging.service.js";
+import { validateMessageStructure, validatePayload } from "./schemaValidator.js";
+
+/**
+ * OCPP 1.6 WebSocket Server
+ * 
+ * Features:
+ * - Charger identity validation
+ * - Connection lifecycle management
+ * - Message routing (CALL, CALLRESULT, CALLERROR)
+ * - Session recovery after reconnection
+ * - Event emission for internal systems
+ */
+
+// Active WebSocket connections by charger ID
+export const chargers = new Map();
+
+// Charger metadata
+const chargerMetadata = new Map();
+
+/**
+ * Start the OCPP WebSocket server
+ * 
+ * @param {http.Server} server - HTTP server instance
+ */
+export const startOcppServer = (server) => {
+  // Setup event listeners for billing integration
+  setupEventListeners();
+
+  const wss = new WebSocketServer({
+    server,
+    path: undefined, // Accept connections on any path
+    verifyClient: verifyChargerConnection,
+  });
+
+  wss.on("connection", async (ws, req) => {
+    // Extract charger ID from URL path
+    const chargerId = extractChargerId(req.url);
+
+    if (!chargerId || chargerId === "UNKNOWN") {
+      console.warn("❌ Connection rejected: Invalid charger ID");
+      ws.close(4001, "Invalid charger ID");
+      return;
+    }
+
+    // Store connection
+    chargers.set(chargerId, ws);
+    chargerMetadata.set(chargerId, {
+      connectedAt: new Date(),
+      remoteAddress: req.socket.remoteAddress,
+      lastMessageAt: null,
+    });
+
+    console.log(`🔌 Charger connected: ${chargerId} from ${req.socket.remoteAddress}`);
+
+    // Emit connection event
+    ocppEvents.emitChargerConnected(chargerId, {
+      remoteAddress: req.socket.remoteAddress,
+    });
+
+    // Recover any active sessions
+    await handleChargerReconnection(chargerId);
+
+    // Setup message handler
+    ws.on("message", async (rawMessage) => {
+      try {
+        const message = JSON.parse(rawMessage.toString());
+        await routeOcppMessage(ws, chargerId, message);
+      } catch (error) {
+        console.error(`❌ Failed to parse OCPP message from ${chargerId}:`, error.message);
+      }
+    });
+
+    // Setup close handler
+    ws.on("close", (code, reason) => {
+      handleChargerDisconnection(chargerId, code, reason);
+    });
+
+    // Setup error handler
+    ws.on("error", (error) => {
+      console.error(`❌ WebSocket error for ${chargerId}:`, error.message);
+    });
+
+    // Setup ping/pong for connection health
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+  });
+
+  // Heartbeat interval to detect dead connections
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000); // 30 seconds
+
+  wss.on("close", () => {
+    clearInterval(heartbeatInterval);
+  });
+
+  console.log("✅ OCPP WebSocket server started");
+};
+
+/**
+ * Verify incoming charger connection
+ * 
+ * @param {object} info - Connection info
+ * @param {function} callback - Verification callback
+ */
+function verifyChargerConnection(info, callback) {
+  const chargerId = extractChargerId(info.req.url);
+
+  if (!chargerId) {
+    callback(false, 400, "Missing charger ID");
+    return;
+  }
+
+  // Check OCPP subprotocol
+  const protocols = info.req.headers["sec-websocket-protocol"];
+  if (protocols && !protocols.includes("ocpp1.6")) {
+    console.warn(`⚠️ Charger ${chargerId} using non-standard protocol: ${protocols}`);
+    // Still accept - many chargers don't send correct subprotocol
+  }
+
+  // TODO: Add charger registration validation
+  // For now, accept all connections (charger will be registered on BootNotification)
+
+  callback(true);
+}
+
+/**
+ * Extract charger ID from URL path
+ * 
+ * @param {string} url - Request URL (e.g., "/CP001" or "/ocpp/CP001")
+ * @returns {string} Charger ID
+ */
+function extractChargerId(url) {
+  if (!url) return null;
+
+  // Remove query string
+  const path = url.split("?")[0];
+
+  // Extract last path segment as charger ID
+  const segments = path.split("/").filter(Boolean);
+
+  if (segments.length === 0) return null;
+
+  // If path is /ocpp/CHARGER_ID, use last segment
+  // If path is /CHARGER_ID, use that
+  return segments[segments.length - 1] || null;
+}
+
+/**
+ * Route incoming OCPP message to appropriate handler
+ * 
+ * @param {WebSocket} ws
+ * @param {string} chargerId
+ * @param {array} message - Parsed OCPP message
+ */
+async function routeOcppMessage(ws, chargerId, message) {
+  const metadata = chargerMetadata.get(chargerId);
+  if (metadata) {
+    metadata.lastMessageAt = new Date();
+  }
+
+  // Validate message structure
+  const structureValidation = validateMessageStructure(message);
+  if (!structureValidation.valid) {
+    console.warn(`⚠️ Invalid OCPP message from ${chargerId}: ${structureValidation.error}`);
+    // Can't send error without messageId
+    return;
+  }
+
+  const messageType = message[0];
+  const messageId = message[1];
+
+  // Log incoming message for audit trail (async, don't await)
+  ocppLoggingService.logIncomingMessage(chargerId, message).catch(err => {
+    console.error("Failed to log OCPP message:", err.message);
+  });
+
+  try {
+    switch (messageType) {
+      case MessageType.CALL:
+        // [2, messageId, action, payload]
+        const action = message[2];
+        const payload = message[3] || {};
+
+        // Validate payload against schema
+        const payloadValidation = validatePayload(action, payload);
+        if (!payloadValidation.valid) {
+          console.warn(`⚠️ Invalid payload for ${action} from ${chargerId}:`, payloadValidation.errors);
+          sendCallError(
+            ws,
+            messageId,
+            payloadValidation.errorCode,
+            payloadValidation.errors.join("; ")
+          );
+          return;
+        }
+
+        await handleOcppMessage(ws, chargerId, messageId, action, payload);
+        break;
+
+      case MessageType.CALLRESULT:
+        // [3, messageId, payload]
+        const resultPayload = message[2] || {};
+        handleCallResult(messageId, resultPayload);
+        break;
+
+      case MessageType.CALLERROR:
+        // [4, messageId, errorCode, errorDescription, errorDetails]
+        const errorCode = message[2];
+        const errorDescription = message[3] || "";
+        const errorDetails = message[4] || {};
+        handleCallError(messageId, errorCode, errorDescription, errorDetails);
+        break;
+
+      default:
+        console.warn(`⚠️ Unknown message type ${messageType} from ${chargerId}`);
+        sendCallError(ws, messageId, ErrorCode.PROTOCOL_ERROR, "Unknown message type");
+    }
+  } catch (error) {
+    console.error(`❌ Error processing message from ${chargerId}:`, {
+      error: error.message,
+      stack: error.stack,
+      messageType,
+      action: message[2],
+    });
+    
+    if (messageType === MessageType.CALL) {
+      // Don't expose internal error details
+      sendCallError(
+        ws,
+        messageId,
+        ErrorCode.INTERNAL_ERROR,
+        process.env.NODE_ENV === "development" ? error.message : "Internal server error"
+      );
+    }
+  }
+}
+
+/**
+ * Handle charger reconnection
+ * 
+ * @param {string} chargerId
+ */
+async function handleChargerReconnection(chargerId) {
+  try {
+    // Check for active sessions that need to be recovered
+    const session = await sessionService.recoverSessionAfterReconnect(chargerId);
+
+    if (session) {
+      console.log(`🔄 Active session found for ${chargerId}: ${session.transactionId}`);
+      // The charger will send StatusNotification and MeterValues
+      // which will continue the session naturally
+    }
+
+    // Update charger connection state in database
+    await prisma.charger.updateMany({
+      where: { id: chargerId },
+      data: {
+        connectionState: "CONNECTED",
+        lastSeen: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error(`Error handling reconnection for ${chargerId}:`, error.message);
+  }
+}
+
+/**
+ * Handle charger disconnection
+ * 
+ * @param {string} chargerId
+ * @param {number} code - Close code
+ * @param {Buffer} reason - Close reason
+ */
+async function handleChargerDisconnection(chargerId, code, reason) {
+  console.log(`❌ Charger disconnected: ${chargerId} (code: ${code})`);
+
+  // Clean up
+  chargers.delete(chargerId);
+  chargerMetadata.delete(chargerId);
+
+  // Cancel pending messages
+  cancelPendingMessages(chargerId);
+
+  // Emit disconnection event
+  ocppEvents.emitChargerDisconnected(chargerId, {
+    code,
+    reason: reason?.toString(),
+  });
+
+  // Update database
+  try {
+    await prisma.charger.updateMany({
+      where: { id: chargerId },
+      data: {
+        connectionState: "DISCONNECTED",
+        lastSeen: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error(`Error updating charger state on disconnect:`, error.message);
+  }
+}
+
+/**
+ * Get WebSocket connection for a charger
+ * 
+ * @param {string} chargerId
+ * @returns {WebSocket|null}
+ */
+export function getChargerConnection(chargerId) {
+  return chargers.get(chargerId) || null;
+}
+
+/**
+ * Check if a charger is online
+ * 
+ * @param {string} chargerId
+ * @returns {boolean}
+ */
+export function isChargerOnline(chargerId) {
+  const ws = chargers.get(chargerId);
+  return ws && ws.readyState === 1; // WebSocket.OPEN
+}
+
+/**
+ * Get all connected charger IDs
+ * 
+ * @returns {string[]}
+ */
+export function getConnectedChargerIds() {
+  return Array.from(chargers.keys());
+}
+
+/**
+ * Get charger connection metadata
+ * 
+ * @param {string} chargerId
+ * @returns {object|null}
+ */
+export function getChargerMetadata(chargerId) {
+  return chargerMetadata.get(chargerId) || null;
+}
+
+export default {
+  startOcppServer,
+  chargers,
+  getChargerConnection,
+  isChargerOnline,
+  getConnectedChargerIds,
+  getChargerMetadata,
+};
+
+//schema validator
+import { ErrorCode } from "./ocppConstants.js";
+
+/**
+ * OCPP 1.6 Message Schema Validator
+ * 
+ * Validates incoming OCPP messages against expected schema.
+ * Returns validation errors in OCPP-compatible format.
+ */
+
+// Schema definitions for each action
+const SCHEMAS = {
+  BootNotification: {
+    required: ["chargePointVendor", "chargePointModel"],
+    optional: [
+      "chargeBoxSerialNumber",
+      "chargePointSerialNumber",
+      "firmwareVersion",
+      "iccid",
+      "imsi",
+      "meterSerialNumber",
+      "meterType",
+    ],
+    types: {
+      chargePointVendor: "string",
+      chargePointModel: "string",
+    },
+  },
+
+  Heartbeat: {
+    required: [],
+    optional: [],
+  },
+
+  StatusNotification: {
+    required: ["connectorId", "errorCode", "status"],
+    optional: ["info", "timestamp", "vendorId", "vendorErrorCode"],
+    types: {
+      connectorId: "number",
+      errorCode: "string",
+      status: "string",
+    },
+    enums: {
+      status: [
+        "Available",
+        "Preparing",
+        "Charging",
+        "SuspendedEVSE",
+        "SuspendedEV",
+        "Finishing",
+        "Reserved",
+        "Unavailable",
+        "Faulted",
+      ],
+      errorCode: [
+        "ConnectorLockFailure",
+        "EVCommunicationError",
+        "GroundFailure",
+        "HighTemperature",
+        "InternalError",
+        "LocalListConflict",
+        "NoError",
+        "OtherError",
+        "OverCurrentFailure",
+        "OverVoltage",
+        "PowerMeterFailure",
+        "PowerSwitchFailure",
+        "ReaderFailure",
+        "ResetFailure",
+        "UnderVoltage",
+        "WeakSignal",
+      ],
+    },
+  },
+
+  Authorize: {
+    required: ["idTag"],
+    optional: [],
+    types: {
+      idTag: "string",
+    },
+    constraints: {
+      idTag: { maxLength: 20 },
+    },
+  },
+
+  StartTransaction: {
+    required: ["connectorId", "idTag", "meterStart", "timestamp"],
+    optional: ["reservationId"],
+    types: {
+      connectorId: "number",
+      idTag: "string",
+      meterStart: "number",
+      timestamp: "string",
+      reservationId: "number",
+    },
+    constraints: {
+      connectorId: { min: 1 },
+      idTag: { maxLength: 20 },
+      meterStart: { min: 0 },
+    },
+  },
+
+  StopTransaction: {
+    required: ["meterStop", "timestamp", "transactionId"],
+    optional: ["idTag", "reason", "transactionData"],
+    types: {
+      meterStop: "number",
+      timestamp: "string",
+      transactionId: "number",
+      idTag: "string",
+      reason: "string",
+    },
+    enums: {
+      reason: [
+        "EmergencyStop",
+        "EVDisconnected",
+        "HardReset",
+        "Local",
+        "Other",
+        "PowerLoss",
+        "Reboot",
+        "Remote",
+        "SoftReset",
+        "UnlockCommand",
+        "DeAuthorized",
+      ],
+    },
+  },
+
+  MeterValues: {
+    required: ["connectorId", "meterValue"],
+    optional: ["transactionId"],
+    types: {
+      connectorId: "number",
+      transactionId: "number",
+    },
+    constraints: {
+      connectorId: { min: 0 },
+    },
+  },
+
+  DataTransfer: {
+    required: ["vendorId"],
+    optional: ["messageId", "data"],
+    types: {
+      vendorId: "string",
+      messageId: "string",
+      data: "string",
+    },
+  },
+};
+
+/**
+ * Validate an OCPP message payload against its schema
+ * 
+ * @param {string} action - OCPP action name
+ * @param {object} payload - Message payload
+ * @returns {object} { valid: boolean, errors: string[] }
+ */
+export function validatePayload(action, payload) {
+  const schema = SCHEMAS[action];
+  
+  if (!schema) {
+    // Unknown action - allow but log
+    console.warn(`[OCPP] No schema defined for action: ${action}`);
+    return { valid: true, errors: [] };
+  }
+
+  const errors = [];
+
+  // Check required fields
+  for (const field of schema.required) {
+    if (payload[field] === undefined || payload[field] === null) {
+      errors.push(`Missing required field: ${field}`);
+    }
+  }
+
+  // Check types
+  if (schema.types) {
+    for (const [field, expectedType] of Object.entries(schema.types)) {
+      const value = payload[field];
+      if (value !== undefined && value !== null) {
+        if (!checkType(value, expectedType)) {
+          errors.push(`Field '${field}' should be ${expectedType}, got ${typeof value}`);
+        }
+      }
+    }
+  }
+
+  // Check enums
+  if (schema.enums) {
+    for (const [field, validValues] of Object.entries(schema.enums)) {
+      const value = payload[field];
+      if (value !== undefined && value !== null && !validValues.includes(value)) {
+        errors.push(`Field '${field}' has invalid value '${value}'`);
+      }
+    }
+  }
+
+  // Check constraints
+  if (schema.constraints) {
+    for (const [field, constraints] of Object.entries(schema.constraints)) {
+      const value = payload[field];
+      if (value !== undefined && value !== null) {
+        if (constraints.min !== undefined && value < constraints.min) {
+          errors.push(`Field '${field}' must be >= ${constraints.min}`);
+        }
+        if (constraints.max !== undefined && value > constraints.max) {
+          errors.push(`Field '${field}' must be <= ${constraints.max}`);
+        }
+        if (constraints.maxLength !== undefined && typeof value === "string" && value.length > constraints.maxLength) {
+          errors.push(`Field '${field}' exceeds max length of ${constraints.maxLength}`);
+        }
+      }
+    }
+  }
+
+  // Check for unknown fields (warning only)
+  const allKnownFields = [...(schema.required || []), ...(schema.optional || [])];
+  for (const field of Object.keys(payload)) {
+    if (!allKnownFields.includes(field)) {
+      // Just log, don't fail - OCPP allows vendor extensions
+      console.debug(`[OCPP] Unknown field in ${action}: ${field}`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    errorCode: errors.length > 0 ? ErrorCode.FORMATION_VIOLATION : null,
+  };
+}
+
+/**
+ * Check if value matches expected type
+ */
+function checkType(value, expectedType) {
+  switch (expectedType) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && !isNaN(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && !Array.isArray(value);
+    default:
+      return true;
+  }
+}
+
+/**
+ * Validate OCPP message structure
+ * 
+ * @param {array} message - Raw OCPP message
+ * @returns {object} Validation result
+ */
+export function validateMessageStructure(message) {
+  if (!Array.isArray(message)) {
+    return {
+      valid: false,
+      error: "Message must be an array",
+      errorCode: ErrorCode.FORMATION_VIOLATION,
+    };
+  }
+
+  if (message.length < 3) {
+    return {
+      valid: false,
+      error: "Message too short",
+      errorCode: ErrorCode.FORMATION_VIOLATION,
+    };
+  }
+
+  const [messageType, messageId] = message;
+
+  // Validate message type
+  if (![2, 3, 4].includes(messageType)) {
+    return {
+      valid: false,
+      error: `Invalid message type: ${messageType}`,
+      errorCode: ErrorCode.PROTOCOL_ERROR,
+    };
+  }
+
+  // Validate message ID
+  if (typeof messageId !== "string" || messageId.length === 0) {
+    return {
+      valid: false,
+      error: "Invalid message ID",
+      errorCode: ErrorCode.FORMATION_VIOLATION,
+    };
+  }
+
+  // CALL message should have 4 elements
+  if (messageType === 2 && message.length < 4) {
+    return {
+      valid: false,
+      error: "CALL message requires action and payload",
+      errorCode: ErrorCode.FORMATION_VIOLATION,
+    };
+  }
+
+  return { valid: true };
+}
+
+export default {
+  validatePayload,
+  validateMessageStructure,
+};
+
+
+//charger Routes
+import express from "express";
+import {
+  getAllChargers,
+  getCharger,
+  getChargerStatus,
+  getChargerSessions,
+  startCharging,
+  stopCharging
+} from "./charger.controller.js";
+
+const router = express.Router();
+
+// GET /api/chargers - Get all chargers
+router.get("/", getAllChargers);
+
+// GET /api/chargers/:chargerId - Get single charger
+router.get("/:chargerId", getCharger);
+
+// GET /api/chargers/:chargerId/status - Get charger status
+router.get("/:chargerId/status", getChargerStatus);
+
+// GET /api/chargers/:chargerId/sessions - Get charger sessions
+router.get("/:chargerId/sessions", getChargerSessions);
+
+// POST /api/chargers/:chargerId/start - Start charging
+router.post("/:chargerId/start", startCharging);
+
+// POST /api/chargers/:chargerId/stop - Stop charging
+router.post("/:chargerId/stop", stopCharging);
+
+export default router;
+
+
+//charger controller
+import { chargersStore } from "../services/chargerStore.service.js";
+import { isChargerOnline, getConnectedChargerIds, getChargerMetadata } from "../ocpp/ocppServer.js";
+import { startChargingForUser } from "../ocpp/commands/remoteStartTransaction.js";
+import { stopChargingAtCharger } from "../ocpp/commands/remoteStopTransaction.js";
+import prisma from "../config/db.js";
+import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
+import { validateChargerId, validateConnectorId } from "../utils/validation.js";
+
+/**
+ * Get all chargers (from memory and database)
+ * 
+ * GET /api/chargers
+ */
+export const getAllChargers = async (req, res, next) => {
+  try {
+    // Get chargers from database
+    const dbChargers = await prisma.charger.findMany({
+      include: {
+        station: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+          },
+        },
+        connectors: {
+          select: {
+            connectorId: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: { lastSeen: "desc" },
+    });
+
+    // Merge with in-memory state
+    const chargers = dbChargers.map((charger) => {
+      const memState = chargersStore.get(charger.id);
+      const online = isChargerOnline(charger.id);
+
+      return {
+        id: charger.id,
+        serialNumber: charger.serialNumber,
+        vendor: charger.vendor,
+        model: charger.model,
+        firmwareVersion: charger.firmwareVersion,
+        status: memState?.status || charger.status,
+        connectionState: online ? "CONNECTED" : "DISCONNECTED",
+        lastHeartbeat: memState?.lastHeartbeat || charger.lastHeartbeat,
+        lastSeen: charger.lastSeen,
+        station: charger.station,
+        connectors: charger.connectors,
+        // Active transaction info
+        activeTransaction: memState?.transactionId || null,
+        currentMeterWh: memState?.lastMeterValue || null,
+      };
+    });
+
+    res.json({
+      success: true,
+      count: chargers.length,
+      onlineCount: getConnectedChargerIds().length,
+      chargers,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get single charger details
+ * 
+ * GET /api/chargers/:chargerId
+ */
+export const getCharger = async (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+    
+    // Validate chargerId
+    validateChargerId(chargerId);
+
+    const charger = await prisma.charger.findUnique({
+      where: { id: chargerId },
+      include: {
+        station: true,
+        connectors: true,
+        sessions: {
+          take: 10,
+          orderBy: { startedAt: "desc" },
+        },
+      },
+    });
+
+    if (!charger) {
+      throw new NotFoundError("Charger", chargerId);
+    }
+
+    const memState = chargersStore.get(chargerId);
+    const online = isChargerOnline(chargerId);
+    const metadata = getChargerMetadata(chargerId);
+
+    res.json({
+      success: true,
+      charger: {
+        ...charger,
+        status: memState?.status || charger.status,
+        connectionState: online ? "CONNECTED" : "DISCONNECTED",
+        activeTransaction: memState?.transactionId || null,
+        currentMeterWh: memState?.lastMeterValue || null,
+        connectionMetadata: metadata,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get charger status (real-time)
+ * 
+ * GET /api/chargers/:chargerId/status
+ */
+export const getChargerStatus = (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+    
+    validateChargerId(chargerId);
+    
+    const memState = chargersStore.get(chargerId);
+    const online = isChargerOnline(chargerId);
+
+    if (!memState && !online) {
+      throw new NotFoundError("Charger", chargerId);
+    }
+
+    res.json({
+      success: true,
+      chargerId,
+      online,
+      status: memState?.status || "Unknown",
+      connectorId: memState?.connectorId,
+      transactionId: memState?.transactionId,
+      meterWh: memState?.lastMeterValue,
+      meterStart: memState?.meterStart,
+      energyUsedWh: memState?.meterStart 
+        ? (memState.lastMeterValue || 0) - memState.meterStart 
+        : null,
+      lastHeartbeat: memState?.lastHeartbeat,
+      lastMeterTime: memState?.lastMeterTime,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Start charging remotely
+ * 
+ * POST /api/chargers/:chargerId/start
+ * Body: { userId?: string, connectorId?: number }
+ */
+export const startCharging = async (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+    const { userId, connectorId = 1 } = req.body;
+
+    // Validate inputs
+    validateChargerId(chargerId);
+    const validConnectorId = validateConnectorId(connectorId);
+
+    // Check if charger is online
+    if (!isChargerOnline(chargerId)) {
+      throw new ChargerOfflineError(chargerId);
+    }
+
+    // Check for existing active transaction
+    const memState = chargersStore.get(chargerId);
+    if (memState?.transactionId) {
+      throw new ConflictError(
+        "Charger already has an active transaction",
+        "ACTIVE_TRANSACTION_EXISTS"
+      );
+    }
+
+    // Send RemoteStartTransaction
+    const result = await startChargingForUser({
+      chargerId,
+      userId: userId || "USER_API_REQUEST",
+      connectorId: validConnectorId,
+    });
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: "Remote start command accepted",
+        chargerId,
+        connectorId: validConnectorId,
+      });
+    } else {
+      throw new ConflictError(
+        result.error || "Charger rejected start command",
+        "CHARGER_REJECTED_START"
+      );
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Stop charging remotely
+ * 
+ * POST /api/chargers/:chargerId/stop
+ */
+export const stopCharging = async (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+    
+    validateChargerId(chargerId);
+
+    // Check if charger is online
+    if (!isChargerOnline(chargerId)) {
+      throw new ChargerOfflineError(chargerId);
+    }
+
+    // Check for active transaction
+    const memState = chargersStore.get(chargerId);
+    if (!memState?.transactionId) {
+      throw new ConflictError(
+        "No active transaction to stop",
+        "NO_ACTIVE_TRANSACTION"
+      );
+    }
+
+    // Send RemoteStopTransaction
+    const result = await stopChargingAtCharger(chargerId);
+    console.log("Stop Charging result : ", JSON.stringify(result, null, 2));
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: "Remote stop command accepted",
+        chargerId,
+        transactionId: result.transactionId,
+      });
+    } else {
+      throw new ConflictError(
+        result.error || "Charger rejected stop command",
+        "CHARGER_REJECTED_STOP"
+      );
+    }
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get charger sessions
+ * 
+ * GET /api/chargers/:chargerId/sessions
+ */
+export const getChargerSessions = async (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+    const { limit = 20, offset = 0, active } = req.query;
+    
+    validateChargerId(chargerId);
+
+    const where = { chargerId };
+    if (active === "true") {
+      where.endedAt = null;
+    } else if (active === "false") {
+      where.endedAt = { not: null };
+    }
+
+    const sessions = await prisma.chargingSession.findMany({
+      where,
+      orderBy: { startedAt: "desc" },
+      take: parseInt(limit) || 20,
+      skip: parseInt(offset) || 0,
+      include: {
+        user: {
+          select: { id: true, name: true },
+        },
+      },
+    });
+
+    res.json({
+      success: true,
+      count: sessions.length,
+      sessions,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+// chargerStore service
+const chargersStore = new Map();
+
+// export const getChargerState = (id) => chargersStore.get(id);
+
+/**
+ * Get charger state
+ */
+export function getChargerState(chargerId) {
+  return chargersStore.get(chargerId);
+}
+
+/**
+ * Update charger state
+ */
+// export function updateChargerState(chargerId, update) {
+//   const charger = chargersStore.get(chargerId) || {};
+//   chargersStore.set(chargerId, { ...charger, ...update });
+// }
+
+/**
+ * Update last meter reading
+ */
+export function updateMeterValue(chargerId, meterWh) {
+  const charger = chargersStore.get(chargerId) || {};
+  chargersStore.set(chargerId, { ...charger, lastMeterValue: meterWh });
+}
+
+export const getAllChargerStates = () =>
+  Array.from(chargersStore.values());
+
+export const updateChargerState = (id, data) => {
+  chargersStore.set(id, {
+    ...(chargersStore.get(id) || {}),
+    chargerId: id,
+    ...data,
+    updatedAt: new Date(),
+  });
+};
+
+export { chargersStore }; // <-- named export
+export default chargersStore; // <-- default export
+
+//charger persistence.js
+import prisma from "../config/db.js";
+import chargerStore from "./chargerStore.service.js";
+
+export const syncChargerToDb = async (chargerId) => {
+  const state = chargerStore.get(chargerId);
+  if (!state) return;
+
+  const normalizedStatus =
+    typeof state.status === "string"
+      ? state.status.toUpperCase()
+      : state.status;
+
+  const normalizedConnectionState =
+    typeof state.connectionStatus === "string"
+      ? state.connectionStatus.toUpperCase()
+      : state.connectionStatus;
+
+  await prisma.charger.upsert({
+    where: { id: chargerId },
+    update: {
+      status: normalizedStatus,
+      connectionState: normalizedConnectionState,
+      lastHeartbeat: state.lastHeartbeat,
+      lastSeen: new Date(),
+      totalEnergyWh: state.meterWh,
+    },
+    create: {
+      id: chargerId,
+      status: normalizedStatus,
+      connectionState: normalizedConnectionState,
+      lastHeartbeat: state.lastHeartbeat,
+      lastSeen: new Date(),
+      totalEnergyWh: state.meterWh,
+    },
+  });
+};
+
+//charger state.js
+export const chargerState = {
+  chargerId: null,
+  status: "Unavailable",
+  meterWh: 0,
+  transactionId: null,
+  connectorId: 1,
+  connectionStatus: "Disconnected"
+};
+
+
+//session.service.js
+import prisma from "../config/db.js";
+import Decimal from "decimal.js";
+import walletService from "./wallet.service.js";
+import { generateIdempotencyKey } from "./ledger.service.js";
+import notificationService from "./notification.service.js";
+import { SessionNotFoundError, SessionAlreadyActiveError } from "../errors/index.js";
+
+/**
+ * Session Service
+ * 
+ * Manages charging session lifecycle:
+ * - Session creation
+ * - Session updates
+ * - Session finalization
+ * - Fault handling with partial refund
+ * - Offline replay support
+ */
+
+/**
+ * Create a new charging session
+ * 
+ * @param {object} data
+ * @returns {Promise<object>} Created session
+ */
+export async function createSession(data) {
+  const {
+    chargerId,
+    connectorId,
+    transactionId,
+    idTag,
+    userId,
+    meterStart,
+    timestamp,
+    pricePerKwh,
+  } = data;
+
+  // Idempotency check - prevent duplicate session creation
+  const existing = await prisma.chargingSession.findUnique({
+    where: { transactionId },
+  });
+
+  if (existing) {
+    console.log(`Session ${transactionId} already exists, returning existing`);
+    return { session: existing, duplicate: true };
+  }
+
+  // Get connector record if exists
+  let connector = null;
+  if (connectorId) {
+    connector = await prisma.connector.findUnique({
+      where: {
+        chargerId_connectorId: {
+          chargerId,
+          connectorId: parseInt(connectorId),
+        },
+      },
+    });
+
+    // CRITICAL: Check for existing active session on this connector
+    if (connector) {
+      const activeSessionOnConnector = await prisma.chargingSession.findFirst({
+        where: {
+          connectorId: connector.id,
+          endedAt: null,
+        },
+      });
+
+      if (activeSessionOnConnector) {
+        console.warn(
+          `[SESSION] Active session ${activeSessionOnConnector.transactionId} exists on connector ${connectorId}`
+        );
+        // Return existing session instead of throwing - charger may have restarted
+        return { 
+          session: activeSessionOnConnector, 
+          duplicate: true, 
+          reason: "Connector has active session" 
+        };
+      }
+    }
+  }
+
+  // Also check for active session on charger (any connector)
+  const activeSessionOnCharger = await prisma.chargingSession.findFirst({
+    where: {
+      chargerId,
+      endedAt: null,
+    },
+  });
+
+  if (activeSessionOnCharger) {
+    console.warn(
+      `[SESSION] Active session ${activeSessionOnCharger.transactionId} exists on charger ${chargerId}`
+    );
+    // For single-connector chargers, this might be the same session
+    // Only warn, don't block - let the new transaction take over
+  }
+
+  const session = await prisma.chargingSession.create({
+    data: {
+      chargerId,
+      connectorId: connector?.id,
+      transactionId,
+      idTag,
+      userId,
+      meterStartWh: meterStart || 0,
+      startedAt: timestamp ? new Date(timestamp) : new Date(),
+      pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
+      lastBilledWh: meterStart || 0,
+    },
+  });
+
+  console.log(`✅ Session created: ${transactionId}`);
+
+  return { session, duplicate: false };
+}
+
+/**
+ * Update session meter values
+ * 
+ * @param {string} transactionId
+ * @param {number} meterWh
+ * @returns {Promise<object>} Updated session
+ */
+export async function updateSessionMeter(transactionId, meterWh) {
+  const session = await prisma.chargingSession.findUnique({
+    where: { transactionId },
+  });
+
+  if (!session) {
+    throw new SessionNotFoundError(transactionId);
+  }
+
+  const energyUsed = meterWh - (session.meterStartWh || 0);
+
+  const updated = await prisma.chargingSession.update({
+    where: { transactionId },
+    data: {
+      energyUsedWh: Math.max(0, energyUsed),
+    },
+  });
+
+  return updated;
+}
+
+/**
+ * Finalize (stop) a charging session
+ * 
+ * @param {object} data
+ * @returns {Promise<object>} Finalized session
+ */
+export async function finalizeSession(data) {
+  const {
+    transactionId,
+    meterStop,
+    timestamp,
+    reason,
+    idTag,
+  } = data;
+
+  const session = await prisma.chargingSession.findUnique({
+    where: { transactionId },
+  });
+
+  if (!session) {
+    // Log but don't throw - may be offline replay for unknown transaction
+    console.warn(`[SESSION] Session not found for finalization: ${transactionId}`);
+    return { session: null, alreadyFinalized: false, notFound: true };
+  }
+
+  if (session.endedAt) {
+    console.log(`Session ${transactionId} already finalized`);
+    return { session, alreadyFinalized: true };
+  }
+
+  const endTime = timestamp ? new Date(timestamp) : new Date();
+  const energyUsed = (meterStop || 0) - (session.meterStartWh || 0);
+
+  const updated = await prisma.chargingSession.update({
+    where: { transactionId },
+    data: {
+      meterStopWh: meterStop,
+      endedAt: endTime,
+      energyUsedWh: Math.max(0, energyUsed),
+      stopReason: mapStopReason(reason),
+    },
+  });
+
+  console.log(`✅ Session finalized: ${transactionId}, energy: ${energyUsed}Wh`);
+
+  return { session: updated, alreadyFinalized: false };
+}
+
+/**
+ * Handle session fault with partial refund
+ * 
+ * When a charger faults during a session:
+ * 1. Stop the session
+ * 2. Calculate energy actually delivered
+ * 3. Refund any overcharged amount
+ * 
+ * @param {object} data
+ */
+export async function handleSessionFault(data) {
+  const { chargerId, connectorId, transactionId, errorCode } = data;
+
+  console.log(`⚠️ Handling session fault: ${transactionId}, error: ${errorCode}`);
+
+  // Get session
+  const session = await prisma.chargingSession.findUnique({
+    where: { transactionId },
+    include: { user: true },
+  });
+
+  if (!session) {
+    console.warn(`No session found for fault: ${transactionId}`);
+    return;
+  }
+
+  if (session.endedAt) {
+    console.log(`Session already ended, skipping fault handling`);
+    return;
+  }
+
+  // Calculate actual energy delivered
+  const lastMeterWh = session.energyUsedWh || 0;
+  const actualCost = calculateActualCost(lastMeterWh, session.pricePerKwh);
+  const chargedAmount = new Decimal(session.totalCost?.toString() || "0");
+  const refundAmount = chargedAmount.minus(actualCost);
+
+  // Process refund if we overcharged
+  if (refundAmount.gt(0) && session.userId) {
+    const idempotencyKey = generateIdempotencyKey(
+      "refund",
+      transactionId,
+      "fault"
+    );
+
+    await walletService.processRefund({
+      userId: session.userId,
+      amount: refundAmount.toFixed(2),
+      reason: `Partial refund due to charger fault: ${errorCode}`,
+      referenceId: transactionId,
+      idempotencyKey,
+    });
+
+    console.log(`💰 Refunded ${refundAmount.toFixed(2)} for faulted session`);
+  }
+
+  // Finalize session
+  await prisma.chargingSession.update({
+    where: { transactionId },
+    data: {
+      endedAt: new Date(),
+      stopReason: "CHARGER_FAULT",
+      totalCost: actualCost.toFixed(2),
+    },
+  });
+
+  // Notify user
+  if (session.userId) {
+    await notificationService.sendChargingForceStopped({
+      userId: session.userId,
+      transactionId,
+      reason: `Charger fault: ${errorCode}`,
+      energyUsedWh: lastMeterWh,
+      totalCost: actualCost.toFixed(2),
+    });
+  }
+}
+
+/**
+ * Get active session for a charger
+ * 
+ * @param {string} chargerId
+ * @returns {Promise<object|null>}
+ */
+export async function getActiveSession(chargerId) {
+  return prisma.chargingSession.findFirst({
+    where: {
+      chargerId,
+      endedAt: null,
+    },
+    orderBy: { startedAt: "desc" },
+  });
+}
+
+/**
+ * Get active session by transaction ID
+ * 
+ * @param {string} transactionId
+ * @returns {Promise<object|null>}
+ */
+export async function getSessionByTransactionId(transactionId) {
+  return prisma.chargingSession.findUnique({
+    where: { transactionId },
+    include: {
+      user: true,
+      charger: true,
+    },
+  });
+}
+
+/**
+ * Recover session after charger reconnection
+ * 
+ * When a charger reconnects, check for any open sessions
+ * and resume billing if needed.
+ * 
+ * @param {string} chargerId
+ * @returns {Promise<object|null>} Recovered session
+ */
+export async function recoverSessionAfterReconnect(chargerId) {
+  const session = await getActiveSession(chargerId);
+
+  if (!session) {
+    return null;
+  }
+
+  console.log(`🔄 Recovering session ${session.transactionId} for ${chargerId}`);
+
+  // Session exists but charger reconnected - the charger will send
+  // StatusNotification and MeterValues which will continue the session
+
+  return session;
+}
+
+/**
+ * Handle offline replay of transactions
+ * 
+ * When a charger was offline and sends historical transactions,
+ * process them with idempotency to prevent duplicates.
+ * 
+ * @param {object} data - StartTransaction or StopTransaction data
+ * @param {string} type - "start" or "stop"
+ */
+export async function handleOfflineReplay(data, type) {
+  if (type === "start") {
+    const result = await createSession(data);
+    if (result.duplicate) {
+      console.log(`📥 Offline replay: Session ${data.transactionId} already exists`);
+    }
+    return result;
+  }
+
+  if (type === "stop") {
+    const result = await finalizeSession(data);
+    if (result.alreadyFinalized) {
+      console.log(`📥 Offline replay: Session ${data.transactionId} already stopped`);
+    }
+    return result;
+  }
+}
+
+/**
+ * Get session statistics for a user
+ * 
+ * @param {string} userId
+ * @param {object} options
+ * @returns {Promise<object>}
+ */
+export async function getUserSessionStats(userId, options = {}) {
+  const { startDate, endDate } = options;
+
+  const where = { userId };
+  if (startDate || endDate) {
+    where.startedAt = {};
+    if (startDate) where.startedAt.gte = new Date(startDate);
+    if (endDate) where.startedAt.lte = new Date(endDate);
+  }
+
+  const sessions = await prisma.chargingSession.findMany({
+    where,
+    select: {
+      energyUsedWh: true,
+      totalCost: true,
+      startedAt: true,
+      endedAt: true,
+    },
+  });
+
+  const totalEnergy = sessions.reduce((sum, s) => sum + (s.energyUsedWh || 0), 0);
+  const totalCost = sessions.reduce(
+    (sum, s) => sum.plus(new Decimal(s.totalCost?.toString() || "0")),
+    new Decimal(0)
+  );
+  const totalSessions = sessions.length;
+  const completedSessions = sessions.filter((s) => s.endedAt).length;
+
+  return {
+    totalEnergy,
+    totalEnergyKwh: (totalEnergy / 1000).toFixed(2),
+    totalCost: totalCost.toFixed(2),
+    totalSessions,
+    completedSessions,
+  };
+}
+
+// Helper functions
+function calculateActualCost(energyWh, pricePerKwh) {
+  if (!pricePerKwh) {
+    return new Decimal(0);
+  }
+  const energyKwh = new Decimal(energyWh).dividedBy(1000);
+  return energyKwh.times(new Decimal(pricePerKwh.toString()));
+}
+
+function mapStopReason(ocppReason) {
+  const mapping = {
+    EmergencyStop: "EMERGENCY_STOP",
+    EVDisconnected: "USER_REQUESTED",
+    HardReset: "OTHER",
+    Local: "USER_REQUESTED",
+    Other: "OTHER",
+    PowerLoss: "OTHER",
+    Reboot: "OTHER",
+    Remote: "REMOTE_STOP",
+    SoftReset: "OTHER",
+    UnlockCommand: "REMOTE_STOP",
+    DeAuthorized: "OTHER",
+  };
+
+  return mapping[ocppReason] || "OTHER";
+}
+
+export default {
+  createSession,
+  updateSessionMeter,
+  finalizeSession,
+  handleSessionFault,
+  getActiveSession,
+  getSessionByTransactionId,
+  recoverSessionAfterReconnect,
+  handleOfflineReplay,
+  getUserSessionStats,
+};
+
+//ocpp login.service.js
+import prisma from "../config/db.js";
+
+/**
+ * OCPP Message Logging Service
+ * 
+ * Records all OCPP messages for audit and debugging purposes.
+ * Messages are stored immutably for regulatory compliance.
+ */
+
+/**
+ * Log an incoming OCPP message (CP → CS)
+ * 
+ * @param {string} chargerId
+ * @param {array} message - Raw OCPP message array
+ * @returns {Promise<object>}
+ */
+export async function logIncomingMessage(chargerId, message) {
+  const [messageType, messageId, ...rest] = message;
+  
+  let action = null;
+  let payload = null;
+  let errorCode = null;
+  let errorDescription = null;
+
+  if (messageType === 2) {
+    // CALL: [2, messageId, action, payload]
+    action = rest[0];
+    payload = rest[1];
+  } else if (messageType === 3) {
+    // CALLRESULT: [3, messageId, payload]
+    payload = rest[0];
+  } else if (messageType === 4) {
+    // CALLERROR: [4, messageId, errorCode, errorDescription, errorDetails]
+    errorCode = rest[0];
+    errorDescription = rest[1];
+    payload = rest[2];
+  }
+
+  try {
+    return await prisma.ocppMessageLog.create({
+      data: {
+        chargerId,
+        direction: "INCOMING",
+        messageType,
+        messageId,
+        action,
+        payload: JSON.stringify(payload),
+        errorCode,
+        errorDescription,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to log incoming OCPP message:", error);
+    // Don't throw - logging should not fail the main operation
+    return null;
+  }
+}
+
+/**
+ * Log an outgoing OCPP message (CS → CP)
+ * 
+ * @param {string} chargerId
+ * @param {array} message - Raw OCPP message array
+ * @returns {Promise<object>}
+ */
+export async function logOutgoingMessage(chargerId, message) {
+  const [messageType, messageId, ...rest] = message;
+  
+  let action = null;
+  let payload = null;
+  let errorCode = null;
+  let errorDescription = null;
+
+  if (messageType === 2) {
+    // CALL: [2, messageId, action, payload]
+    action = rest[0];
+    payload = rest[1];
+  } else if (messageType === 3) {
+    // CALLRESULT: [3, messageId, payload]
+    payload = rest[0];
+  } else if (messageType === 4) {
+    // CALLERROR: [4, messageId, errorCode, errorDescription, errorDetails]
+    errorCode = rest[0];
+    errorDescription = rest[1];
+    payload = rest[2];
+  }
+
+  try {
+    return await prisma.ocppMessageLog.create({
+      data: {
+        chargerId,
+        direction: "OUTGOING",
+        messageType,
+        messageId,
+        action,
+        payload: JSON.stringify(payload),
+        errorCode,
+        errorDescription,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to log outgoing OCPP message:", error);
+    return null;
+  }
+}
+
+/**
+ * Update log with response (for tracking round-trip time)
+ * 
+ * @param {string} messageId
+ * @param {object} response
+ * @param {number} responseTimeMs
+ */
+export async function updateLogWithResponse(messageId, response, responseTimeMs) {
+  try {
+    await prisma.ocppMessageLog.updateMany({
+      where: { messageId },
+      data: {
+        response: JSON.stringify(response),
+        responseTime: responseTimeMs,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to update OCPP log with response:", error);
+  }
+}
+
+/**
+ * Get message statistics for a charger
+ * 
+ * @param {string} chargerId
+ * @param {Date} since - Since when to calculate stats
+ */
+export async function getMessageStats(chargerId, since = null) {
+  const where = { chargerId };
+  if (since) {
+    where.timestamp = { gte: since };
+  }
+
+  const messages = await prisma.ocppMessageLog.groupBy({
+    by: ["action", "direction"],
+    where,
+    _count: { id: true },
+  });
+
+  const errorCount = await prisma.ocppMessageLog.count({
+    where: {
+      ...where,
+      messageType: 4, // CALLERROR
+    },
+  });
+
+  return {
+    messageCounts: messages,
+    errorCount,
+  };
+}
+
+export default {
+  logIncomingMessage,
+  logOutgoingMessage,
+  updateLogWithResponse,
+  getMessageStats,
+};
+
+
