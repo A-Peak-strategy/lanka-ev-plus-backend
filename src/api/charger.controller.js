@@ -1,6 +1,6 @@
 import { chargersStore } from "../services/chargerStore.service.js";
 import { isChargerOnline, getConnectedChargerIds, getChargerMetadata } from "../ocpp/ocppServer.js";
-import { startChargingForUser } from "../ocpp/commands/remoteStartTransaction.js";
+import { startChargingForUser, unlockConnectorEMG } from "../ocpp/commands/remoteStartTransaction.js";
 import { stopChargingAtCharger } from "../ocpp/commands/remoteStopTransaction.js";
 import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
@@ -294,3 +294,13 @@ export const getChargerSessions = async (req, res, next) => {
     next(error);
   }
 };
+
+export async function unlockConnector(req, res) {
+  const { id } = req.params;
+  const { connectorId = 1 } = req.body;
+
+  const result = await unlockConnectorEMG(id, connectorId);
+
+  res.json(result);
+}
+

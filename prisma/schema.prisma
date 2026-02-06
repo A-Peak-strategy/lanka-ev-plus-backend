@@ -426,7 +426,7 @@ model GracePeriodJob {
   id              String    @id @default(uuid())
   
   sessionId       Int       @unique
-  transactionId   String    @unique
+  transactionId   Int    @unique
   userId          String
   
   // Job details
@@ -497,7 +497,7 @@ model SettlementItem {
   
   settlementId    String
   sessionId       Int
-  transactionId   String
+  transactionId   Int
   
   // Session details
   energyWh        Int

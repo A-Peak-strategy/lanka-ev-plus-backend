@@ -23,7 +23,7 @@ const PAYHERE_CONFIG = {
     : "https://www.payhere.lk",
   returnUrl: process.env.PAYHERE_RETURN_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/return`,
   cancelUrl: process.env.PAYHERE_CANCEL_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/cancel`,
-  notifyUrl: process.env.PAYHERE_NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
+  notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
 };
 
 /**
@@ -129,7 +129,7 @@ export async function initiatePayment({
   email,
   phone,
   firstName,
-  lastName,
+  lastName = "evplus",
   address,
   city,
   country = "Sri Lanka",
@@ -161,7 +161,7 @@ export async function initiatePayment({
       currency: "LKR",
       status: "PENDING",
       firstName: firstName || null,
-      lastName: lastName || null,
+      lastName: lastName || "evplus",
       email: email || null,
       phone: phone || null,
       address: address || null,

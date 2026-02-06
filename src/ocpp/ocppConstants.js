@@ -187,6 +187,71 @@ export const CStoCPAction = {
   UPDATE_FIRMWARE: "UpdateFirmware",
 };
 
+// ChangeConfiguration Status
+export const ConfigurationStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+  NOT_SUPPORTED: "NotSupported",
+};
+
+// ClearCache Status
+export const ClearCacheStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+};
+
+
+// Availability Type
+export const AvailabilityType = {
+  INOPERATIVE: "Inoperative",
+  OPERATIVE: "Operative",
+};
+
+// Availability Status
+export const AvailabilityStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+  SCHEDULED: "Scheduled",
+};
+
+// Trigger Message Status
+export const TriggerMessageStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+  NOT_IMPLEMENTED: "NotImplemented",
+};
+
+// Message Trigger
+export const MessageTrigger = {
+  BOOT_NOTIFICATION: "BootNotification",
+  DIAGNOSTICS_STATUS_NOTIFICATION: "DiagnosticsStatusNotification",
+  FIRMWARE_STATUS_NOTIFICATION: "FirmwareStatusNotification",
+  HEARTBEAT: "Heartbeat",
+  METER_VALUES: "MeterValues",
+  STATUS_NOTIFICATION: "StatusNotification",
+};
+
+// Charging Profile Purpose Type
+export const ChargingProfilePurposeType = {
+  CHARGE_POINT_MAX_PROFILE: "ChargePointMaxProfile",
+  TX_DEFAULT_PROFILE: "TxDefaultProfile",
+  TX_PROFILE: "TxProfile",
+};
+
+// Charging Profile Status
+export const ChargingProfileStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+  NOT_SUPPORTED: "NotSupported",
+};
+
+// Composite Schedule Status
+export const CompositeScheduleStatus = {
+  ACCEPTED: "Accepted",
+  REJECTED: "Rejected",
+};
+
+
 export default {
   MessageType,
   ErrorCode,
@@ -202,7 +267,16 @@ export default {
   UnlockStatus,
   StopReason,
   Measurand,
+  ConfigurationStatus,
+  ClearCacheStatus,
   CPtoCSAction,
   CStoCPAction,
+  AvailabilityType,
+  AvailabilityStatus,
+  TriggerMessageStatus,
+  MessageTrigger,
+  ChargingProfilePurposeType,
+  ChargingProfileStatus,
+  CompositeScheduleStatus,
 };
 

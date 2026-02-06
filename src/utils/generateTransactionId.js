@@ -1,8 +1,13 @@
-export function generateTransactionId(chargerId) {
-  const now = new Date();
-  const timestamp = now
-    .toISOString()          
-    .replace(/[-:.TZ]/g, ""); 
+import { v4 as uuid } from "uuid";
 
-  return `${timestamp}`;
+export function generateTransactionId(chargerId) {
+  // const now = new Date();
+  // const timestamp = now
+  //   .toISOString()          
+  //   .replace(/[-:.TZ]/g, ""); 
+
+  // return `${timestamp}`;
+
+    return uuid();
+
 }

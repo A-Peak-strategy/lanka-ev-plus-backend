@@ -114,8 +114,32 @@ export async function startChargingForUser(params) {
   });
 }
 
+export async function unlockConnectorEMG(chargerId="CH008", connectorId = 1) {
+  if (!isChargerOnline(chargerId)) {
+    throw new Error(`Charger ${chargerId} is not online`);
+  }
+
+  const ws = getChargerConnection(chargerId);
+
+  if (!ws) {
+    throw new Error(`WebSocket not found for charger ${chargerId}`);
+  }
+
+  console.log(`[CMD] UnlockConnector → ${chargerId} (connector ${connectorId})`);
+
+  return sendCall(
+    ws,
+    chargerId,                 // ✅ chargerId, NOT messageId
+    CStoCPAction.UNLOCK_CONNECTOR,
+    { connectorId },
+    { timeout: 15000 }
+  );
+}
+
+
 export default {
   remoteStartTransaction,
   startChargingForUser,
+  unlockConnectorEMG,
 };
 

@@ -5,7 +5,8 @@ import {
   getChargerStatus,
   getChargerSessions,
   startCharging,
-  stopCharging
+  stopCharging,
+  unlockConnector
 } from "./charger.controller.js";
 
 const router = express.Router();
@@ -27,5 +28,7 @@ router.post("/:chargerId/start", startCharging);
 
 // POST /api/chargers/:chargerId/stop - Stop charging
 router.post("/:chargerId/stop", stopCharging);
+
+router.post("/:chargerId/unlock", unlockConnector );
 
 export default router;

@@ -148,6 +148,164 @@ const SCHEMAS = {
       data: "string",
     },
   },
+
+  // Configuration Management
+  GetConfiguration: {
+    required: [],
+    optional: ["key"],
+    types: {
+      key: ["string", "array"],
+    },
+  },
+
+  ChangeConfiguration: {
+    required: ["key", "value"],
+    optional: [],
+    types: {
+      key: "string",
+      value: "string",
+    },
+  },
+
+  ClearCache: {
+    required: [],
+    optional: [],
+  },
+
+  // Remote Control
+  RemoteStartTransaction: {
+    required: ["idTag"],
+    optional: ["connectorId", "chargingProfile"],
+    types: {
+      connectorId: "number",
+      idTag: "string",
+      chargingProfile: "object",
+    },
+  },
+
+  RemoteStopTransaction: {
+    required: ["transactionId"],
+    optional: [],
+    types: {
+      transactionId: "number",
+    },
+  },
+
+  UnlockConnector: {
+    required: ["connectorId"],
+    optional: [],
+    types: {
+      connectorId: "number",
+    },
+  },
+
+  // Firmware Management
+  GetDiagnostics: {
+    required: ["location"],
+    optional: ["retries", "retryInterval", "startTime", "stopTime"],
+    types: {
+      location: "string",
+      retries: "number",
+      retryInterval: "number",
+      startTime: "string",
+      stopTime: "string",
+    },
+  },
+
+  UpdateFirmware: {
+    required: ["location", "retrieveDate"],
+    optional: ["retries", "retryInterval"],
+    types: {
+      location: "string",
+      retrieveDate: "string",
+      retries: "number",
+      retryInterval: "number",
+    },
+  },
+
+  DiagnosticsStatusNotification: {
+    required: ["status"],
+    optional: [],
+    types: {
+      status: "string",
+    },
+    enums: {
+      status: ["Idle", "Uploaded", "UploadFailed", "Uploading"],
+    },
+  },
+
+  FirmwareStatusNotification: {
+    required: ["status"],
+    optional: [],
+    types: {
+      status: "string",
+    },
+    enums: {
+      status: ["Downloaded", "DownloadFailed", "Downloading", "Idle", "InstallationFailed", "Installing", "Installed"],
+    },
+  },
+
+  // Reservation
+  ReserveNow: {
+    required: ["connectorId", "expiryDate", "idTag", "reservationId"],
+    optional: ["parentIdTag"],
+    types: {
+      connectorId: "number",
+      expiryDate: "string",
+      idTag: "string",
+      parentIdTag: "string",
+      reservationId: "number",
+    },
+    constraints: {
+      connectorId: { min: 1 },
+      reservationId: { min: 1 },
+    },
+  },
+
+  CancelReservation: {
+    required: ["reservationId"],
+    optional: [],
+    types: {
+      reservationId: "number",
+    },
+    constraints: {
+      reservationId: { min: 1 },
+    },
+  },
+
+  // Smart Charging (OCPP 1.6)
+  SetChargingProfile: {
+    required: ["connectorId", "csChargingProfiles"],
+    optional: [],
+    types: {
+      connectorId: "number",
+      csChargingProfiles: "object",
+    },
+  },
+
+  ClearChargingProfile: {
+    required: [],
+    optional: ["id", "connectorId", "chargingProfilePurpose", "stackLevel"],
+    types: {
+      id: "number",
+      connectorId: "number",
+      chargingProfilePurpose: "string",
+      stackLevel: "number",
+    },
+  },
+
+  GetCompositeSchedule: {
+    required: ["connectorId", "duration"],
+    optional: ["chargingRateUnit"],
+    types: {
+      connectorId: "number",
+      duration: "number",
+      chargingRateUnit: "string",
+    },
+    enums: {
+      chargingRateUnit: ["A", "W"],
+    },
+  },
 };
 
 /**
@@ -159,7 +317,7 @@ const SCHEMAS = {
  */
 export function validatePayload(action, payload) {
   const schema = SCHEMAS[action];
-  
+
   if (!schema) {
     // Unknown action - allow but log
     console.warn(`[OCPP] No schema defined for action: ${action}`);

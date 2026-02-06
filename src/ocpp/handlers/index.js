@@ -10,6 +10,24 @@ import startTransaction from "./startTransaction.js";
 import stopTransaction from "./stopTransaction.js";
 import meterValues from "./meterValues.js";
 import dataTransfer from "./dataTransfer.js";
+import diagnosticsStatusNotification from "./diagnosticsStatusNotification.js";
+import firmwareStatusNotification from "./firmwareStatusNotification.js";
+import changeConfiguration from "./changeConfiguration.js";
+import getConfiguration from "./getConfiguration.js";
+import clearCache from "./clearCache.js";
+// import remoteStartTransaction from "./remoteStartTransaction.js"; // From CP
+// import remoteStopTransaction from "./remoteStopTransaction.js"; // From CP
+import unlockConnector from "./unlockConnector.js";
+import getDiagnostics from "./getDiagnostics.js";
+import updateFirmware from "./updateFirmware.js";
+import changeAvailability from "./changeAvailability.js";
+import reset from "./reset.js";
+import triggerMessage from "./triggerMessage.js";
+import getLocalListVersion from "./getLocalListVersion.js";
+import sendLocalList from "./sendLocalList.js";
+import setChargingProfile from "./setChargingProfile.js";
+import clearChargingProfile from "./clearChargingProfile.js";
+import getCompositeSchedule from "./getCompositeSchedule.js";
 
 /**
  * OCPP Message Handler Router
@@ -20,6 +38,7 @@ import dataTransfer from "./dataTransfer.js";
 
 // Handler registry
 const handlers = {
+  // Core messages (already implemented)
   [CPtoCSAction.BOOT_NOTIFICATION]: bootNotification,
   [CPtoCSAction.HEARTBEAT]: heartbeat,
   [CPtoCSAction.AUTHORIZE]: authorize,
@@ -28,8 +47,36 @@ const handlers = {
   [CPtoCSAction.STOP_TRANSACTION]: stopTransaction,
   [CPtoCSAction.METER_VALUES]: meterValues,
   [CPtoCSAction.DATA_TRANSFER]: dataTransfer,
-  [CPtoCSAction.DIAGNOSTICS_STATUS_NOTIFICATION]: handleDiagnosticsStatus,
-  [CPtoCSAction.FIRMWARE_STATUS_NOTIFICATION]: handleFirmwareStatus,
+  
+  // Firmware & Diagnostics
+  [CPtoCSAction.DIAGNOSTICS_STATUS_NOTIFICATION]: diagnosticsStatusNotification,
+  [CPtoCSAction.FIRMWARE_STATUS_NOTIFICATION]: firmwareStatusNotification,
+  
+  // Configuration
+  [CPtoCSAction.GET_CONFIGURATION]: getConfiguration,
+  [CPtoCSAction.CHANGE_CONFIGURATION]: changeConfiguration,
+  [CPtoCSAction.CLEAR_CACHE]: clearCache,
+  
+  // Remote Transaction (from Charge Point)
+  // [CPtoCSAction.REMOTE_START_TRANSACTION]: remoteStartTransaction,
+  // [CPtoCSAction.REMOTE_STOP_TRANSACTION]: remoteStopTransaction,
+  
+  // Security
+  [CPtoCSAction.GET_LOCAL_LIST_VERSION]: getLocalListVersion,
+  [CPtoCSAction.SEND_LOCAL_LIST]: sendLocalList,
+  
+  // Charger Control
+  [CPtoCSAction.UNLOCK_CONNECTOR]: unlockConnector,
+  [CPtoCSAction.GET_DIAGNOSTICS]: getDiagnostics,
+  [CPtoCSAction.UPDATE_FIRMWARE]: updateFirmware,
+  [CPtoCSAction.CHANGE_AVAILABILITY]: changeAvailability,
+  [CPtoCSAction.RESET]: reset,
+  [CPtoCSAction.TRIGGER_MESSAGE]: triggerMessage,
+  
+  // Smart Charging (OCPP 1.6)
+  [CPtoCSAction.SET_CHARGING_PROFILE]: setChargingProfile,
+  [CPtoCSAction.CLEAR_CHARGING_PROFILE]: clearChargingProfile,
+  [CPtoCSAction.GET_COMPOSITE_SCHEDULE]: getCompositeSchedule,
 };
 
 /**
@@ -42,6 +89,16 @@ const handlers = {
  * @param {object} payload - Message payload
  */
 export async function handleOcppMessage(ws, chargerId, messageId, action, payload) {
+
+    // 🔹 LOG EVERYTHING FROM CHARGER
+  console.log("=================================");
+  console.log(`📥 OCPP MESSAGE FROM CP`);
+  console.log(`Charger: ${chargerId}`);
+  console.log(`Action : ${action}`);
+  console.log(`Msg ID : ${messageId}`);
+  console.log(`Payload:`, JSON.stringify(payload, null, 2));
+  console.log("=================================");
+
   const handler = handlers[action];
 
   if (!handler) {

@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import { MessageType, ErrorCode } from "./ocppConstants.js";
 import ocppLoggingService from "../services/ocppLogging.service.js";
+import { logOcppMessage } from "../middleware/ocppLogger.js";
+import { validatePayload } from "./schemaValidator.js";
 
 /**
  * OCPP Message Queue
@@ -29,19 +31,92 @@ const DEFAULT_TIMEOUT_MS = 30000;
  * @param {object} options - Options (timeout, etc.)
  * @returns {Promise<object>} Response payload
  */
+// export async function sendCall(ws, chargerId, action, payload, options = {}) {
+//   const messageId = options.messageId || uuidv4();
+//   const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
+
+//   return new Promise((resolve, reject) => {
+//     // Create timeout handler
+//     const timeoutId = setTimeout(() => {
+//       pendingMessages.delete(messageId);
+//       logMessage(chargerId, "TIMEOUT", action, messageId, payload, null);
+//       reject(new Error(`OCPP request timeout: ${action} (${messageId})`));
+//     }, timeout);
+
+//     // Store pending message with callbacks
+//     pendingMessages.set(messageId, {
+//       action,
+//       chargerId,
+//       timestamp: Date.now(),
+//       timeoutId,
+//       resolve: (response) => {
+//         clearTimeout(timeoutId);
+//         pendingMessages.delete(messageId);
+//         logMessage(chargerId, "RESPONSE", action, messageId, payload, response);
+//         resolve(response);
+//       },
+//       reject: (error) => {
+//         clearTimeout(timeoutId);
+//         pendingMessages.delete(messageId);
+//         logMessage(chargerId, "ERROR", action, messageId, payload, error);
+//         reject(error);
+//       },
+//     });
+
+//     // Build OCPP CALL message [MessageType, MessageId, Action, Payload]
+//     const message = [MessageType.CALL, messageId, action, payload];
+
+//     try {
+//       ws.send(JSON.stringify(message));
+//       logMessage(chargerId, "CALL", action, messageId, payload, null);
+//     } catch (error) {
+//       clearTimeout(timeoutId);
+//       pendingMessages.delete(messageId);
+//       reject(error);
+//     }
+//   });
+// }
+
+// Update sendCall function with better OCPP 1.6 compliance
 export async function sendCall(ws, chargerId, action, payload, options = {}) {
   const messageId = options.messageId || uuidv4();
   const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
-
+  
+  // Validate payload against OCPP 1.6 schema
+  const validation = validatePayload(action, payload);
+  if (!validation.valid) {
+    throw new Error(`Invalid payload for ${action}: ${validation.errors.join(', ')}`);
+  }
+  
   return new Promise((resolve, reject) => {
+    // Check WebSocket state
+    if (ws.readyState !== 1) { // WebSocket.OPEN
+      reject(new Error(`WebSocket not open for charger ${chargerId}`));
+      return;
+    }
+    
     // Create timeout handler
-    const timeoutId = setTimeout(() => {
+    const timeoutId = setTimeout(() => { 
       pendingMessages.delete(messageId);
-      logMessage(chargerId, "TIMEOUT", action, messageId, payload, null);
-      reject(new Error(`OCPP request timeout: ${action} (${messageId})`));
+      logOcppMessage(chargerId, 'TIMEOUT', action, messageId, payload, null);
+      reject(new Error(`OCPP request timeout after ${timeout}ms: ${action} (${messageId})`));
+      
+      // Log to database
+      ocppLoggingService.logOutgoingMessage(chargerId, [
+        MessageType.CALL,
+        messageId,
+        action,
+        payload,
+      ]).then(log => {
+        ocppLoggingService.updateLogWithResponse(messageId, {
+          error: 'TIMEOUT',
+          message: `Timeout after ${timeout}ms`
+        }, timeout);
+      }).catch(err => console.error('Failed to log timeout:', err));
+      
     }, timeout);
-
-    // Store pending message with callbacks
+    
+    // Store pending message
     pendingMessages.set(messageId, {
       action,
       chargerId,
@@ -50,26 +125,32 @@ export async function sendCall(ws, chargerId, action, payload, options = {}) {
       resolve: (response) => {
         clearTimeout(timeoutId);
         pendingMessages.delete(messageId);
-        logMessage(chargerId, "RESPONSE", action, messageId, payload, response);
+        logOcppMessage(chargerId, 'RESPONSE', action, messageId, payload, response);
         resolve(response);
       },
       reject: (error) => {
         clearTimeout(timeoutId);
         pendingMessages.delete(messageId);
-        logMessage(chargerId, "ERROR", action, messageId, payload, error);
+        logOcppMessage(chargerId, 'ERROR', action, messageId, payload, error);
         reject(error);
       },
     });
-
-    // Build OCPP CALL message [MessageType, MessageId, Action, Payload]
+    
+    // Build OCPP CALL message
     const message = [MessageType.CALL, messageId, action, payload];
-
+    
     try {
       ws.send(JSON.stringify(message));
-      logMessage(chargerId, "CALL", action, messageId, payload, null);
+      logOcppMessage(chargerId, 'OUTGOING', action, messageId, payload, null);
+      
+      // Log to database
+      ocppLoggingService.logOutgoingMessage(chargerId, message).catch(err => {
+        console.error('Failed to log outgoing message:', err);
+      });
     } catch (error) {
       clearTimeout(timeoutId);
       pendingMessages.delete(messageId);
+      logOcppMessage(chargerId, 'ERROR', action, messageId, payload, error);
       reject(error);
     }
   });

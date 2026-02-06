@@ -1,17 +1,24 @@
 import { WebSocketServer } from "ws";
 import { handleOcppMessage } from "./handlers/index.js";
-import { cancelPendingMessages, handleCallResult, handleCallError } from "./messageQueue.js";
+import {
+  cancelPendingMessages,
+  handleCallResult,
+  handleCallError,
+} from "./messageQueue.js";
 import { ocppEvents, setupEventListeners } from "./ocppEvents.js";
 import { MessageType, ErrorCode } from "./ocppConstants.js";
 import { sendCallError } from "./messageQueue.js";
 import prisma from "../config/db.js";
 import sessionService from "../services/session.service.js";
 import ocppLoggingService from "../services/ocppLogging.service.js";
-import { validateMessageStructure, validatePayload } from "./schemaValidator.js";
+import {
+  validateMessageStructure,
+  validatePayload,
+} from "./schemaValidator.js";
 
 /**
  * OCPP 1.6 WebSocket Server
- * 
+ *
  * Features:
  * - Charger identity validation
  * - Connection lifecycle management
@@ -28,22 +35,94 @@ const chargerMetadata = new Map();
 
 /**
  * Start the OCPP WebSocket server
- * 
+ *
  * @param {http.Server} server - HTTP server instance
  */
 export const startOcppServer = (server) => {
   // Setup event listeners for billing integration
   setupEventListeners();
 
+  // Add proper WebSocket configuration for OCPP 1.6
   const wss = new WebSocketServer({
     server,
-    path: undefined, // Accept connections on any path
     verifyClient: verifyChargerConnection,
+    handleProtocols: (protocols) => {
+      if (protocols instanceof Set && protocols.has("ocpp1.6")) {
+        return "ocpp1.6";
+      }
+
+      if (Array.isArray(protocols) && protocols.includes("ocpp1.6")) {
+        return "ocpp1.6";
+      }
+
+      return false;
+    },
   });
+
+  // Update verifyChargerConnection function
+  function verifyChargerConnection(info, callback) {
+    const chargerId = extractChargerId(info.req.url);
+
+    if (!chargerId) {
+      console.warn("❌ Connection rejected: Missing charger ID in URL path");
+      callback(
+        false,
+        400,
+        "Missing charger ID. URL format: ws://server/chargerId",
+      );
+      return;
+    }
+
+    // Validate charger ID format (alphanumeric, hyphens, underscores)
+    if (!/^[a-zA-Z0-9_-]+$/.test(chargerId)) {
+      console.warn(`❌ Invalid charger ID format: ${chargerId}`);
+      callback(false, 400, "Invalid charger ID format");
+      return;
+    }
+
+    // Check for OCPP 1.6 subprotocol
+    // const protocols = info.req.headers["sec-websocket-protocol"];
+    // const hasOcppProtocol = protocols && protocols.includes("ocpp1.6");
+    const protocols = info.req.headers["sec-websocket-protocol"] || "";
+    const hasOcppProtocol = protocols
+      .split(",")
+      .map((p) => p.trim())
+      .includes("ocpp1.6");
+
+    if (!hasOcppProtocol) {
+      console.warn(`⚠️ Charger ${chargerId} missing OCPP 1.6 subprotocol`);
+      // Some chargers don't send subprotocol correctly
+      // Accept with warning for compatibility
+    }
+
+    // Add rate limiting check here if needed
+
+    callback(true);
+  }
 
   wss.on("connection", async (ws, req) => {
     // Extract charger ID from URL path
     const chargerId = extractChargerId(req.url);
+
+    // Set up proper OCPP connection logging
+    console.log(
+      `🔌 [OCPP-CONNECT] Charger ${chargerId} connected from ${req.socket.remoteAddress}`,
+    );
+    console.log(
+      `🔌 [OCPP-HEADERS] Sec-WebSocket-Protocol: ${req.headers["sec-websocket-protocol"]}`,
+    );
+    console.log(
+      `🔌 [OCPP-HEADERS] User-Agent: ${req.headers["user-agent"] || "Unknown"}`,
+    );
+
+    // Store OCPP version for this connection
+    chargerMetadata.set(chargerId, {
+      connectedAt: new Date(),
+      remoteAddress: req.socket.remoteAddress,
+      lastMessageAt: null,
+      ocppVersion: "1.6",
+      userAgent: req.headers["user-agent"],
+    });
 
     if (!chargerId || chargerId === "UNKNOWN") {
       console.warn("❌ Connection rejected: Invalid charger ID");
@@ -59,7 +138,9 @@ export const startOcppServer = (server) => {
       lastMessageAt: null,
     });
 
-    console.log(`🔌 Charger connected: ${chargerId} from ${req.socket.remoteAddress}`);
+    console.log(
+      `🔌 Charger connected: ${chargerId} from ${req.socket.remoteAddress}`,
+    );
 
     // Emit connection event
     ocppEvents.emitChargerConnected(chargerId, {
@@ -75,7 +156,10 @@ export const startOcppServer = (server) => {
         const message = JSON.parse(rawMessage.toString());
         await routeOcppMessage(ws, chargerId, message);
       } catch (error) {
-        console.error(`❌ Failed to parse OCPP message from ${chargerId}:`, error.message);
+        console.error(
+          `❌ Failed to parse OCPP message from ${chargerId}:`,
+          error.message,
+        );
       }
     });
 
@@ -115,35 +199,8 @@ export const startOcppServer = (server) => {
 };
 
 /**
- * Verify incoming charger connection
- * 
- * @param {object} info - Connection info
- * @param {function} callback - Verification callback
- */
-function verifyChargerConnection(info, callback) {
-  const chargerId = extractChargerId(info.req.url);
-
-  if (!chargerId) {
-    callback(false, 400, "Missing charger ID");
-    return;
-  }
-
-  // Check OCPP subprotocol
-  const protocols = info.req.headers["sec-websocket-protocol"];
-  if (protocols && !protocols.includes("ocpp1.6")) {
-    console.warn(`⚠️ Charger ${chargerId} using non-standard protocol: ${protocols}`);
-    // Still accept - many chargers don't send correct subprotocol
-  }
-
-  // TODO: Add charger registration validation
-  // For now, accept all connections (charger will be registered on BootNotification)
-
-  callback(true);
-}
-
-/**
  * Extract charger ID from URL path
- * 
+ *
  * @param {string} url - Request URL (e.g., "/CP001" or "/ocpp/CP001")
  * @returns {string} Charger ID
  */
@@ -165,7 +222,7 @@ function extractChargerId(url) {
 
 /**
  * Route incoming OCPP message to appropriate handler
- * 
+ *
  * @param {WebSocket} ws
  * @param {string} chargerId
  * @param {array} message - Parsed OCPP message
@@ -179,7 +236,9 @@ async function routeOcppMessage(ws, chargerId, message) {
   // Validate message structure
   const structureValidation = validateMessageStructure(message);
   if (!structureValidation.valid) {
-    console.warn(`⚠️ Invalid OCPP message from ${chargerId}: ${structureValidation.error}`);
+    console.warn(
+      `⚠️ Invalid OCPP message from ${chargerId}: ${structureValidation.error}`,
+    );
     // Can't send error without messageId
     return;
   }
@@ -188,7 +247,7 @@ async function routeOcppMessage(ws, chargerId, message) {
   const messageId = message[1];
 
   // Log incoming message for audit trail (async, don't await)
-  ocppLoggingService.logIncomingMessage(chargerId, message).catch(err => {
+  ocppLoggingService.logIncomingMessage(chargerId, message).catch((err) => {
     console.error("Failed to log OCPP message:", err.message);
   });
 
@@ -202,12 +261,15 @@ async function routeOcppMessage(ws, chargerId, message) {
         // Validate payload against schema
         const payloadValidation = validatePayload(action, payload);
         if (!payloadValidation.valid) {
-          console.warn(`⚠️ Invalid payload for ${action} from ${chargerId}:`, payloadValidation.errors);
+          console.warn(
+            `⚠️ Invalid payload for ${action} from ${chargerId}:`,
+            payloadValidation.errors,
+          );
           sendCallError(
             ws,
             messageId,
             payloadValidation.errorCode,
-            payloadValidation.errors.join("; ")
+            payloadValidation.errors.join("; "),
           );
           return;
         }
@@ -230,8 +292,15 @@ async function routeOcppMessage(ws, chargerId, message) {
         break;
 
       default:
-        console.warn(`⚠️ Unknown message type ${messageType} from ${chargerId}`);
-        sendCallError(ws, messageId, ErrorCode.PROTOCOL_ERROR, "Unknown message type");
+        console.warn(
+          `⚠️ Unknown message type ${messageType} from ${chargerId}`,
+        );
+        sendCallError(
+          ws,
+          messageId,
+          ErrorCode.PROTOCOL_ERROR,
+          "Unknown message type",
+        );
     }
   } catch (error) {
     console.error(`❌ Error processing message from ${chargerId}:`, {
@@ -240,14 +309,16 @@ async function routeOcppMessage(ws, chargerId, message) {
       messageType,
       action: message[2],
     });
-    
+
     if (messageType === MessageType.CALL) {
       // Don't expose internal error details
       sendCallError(
         ws,
         messageId,
         ErrorCode.INTERNAL_ERROR,
-        process.env.NODE_ENV === "development" ? error.message : "Internal server error"
+        process.env.NODE_ENV === "development"
+          ? error.message
+          : "Internal server error",
       );
     }
   }
@@ -255,16 +326,19 @@ async function routeOcppMessage(ws, chargerId, message) {
 
 /**
  * Handle charger reconnection
- * 
+ *
  * @param {string} chargerId
  */
 async function handleChargerReconnection(chargerId) {
   try {
     // Check for active sessions that need to be recovered
-    const session = await sessionService.recoverSessionAfterReconnect(chargerId);
+    const session =
+      await sessionService.recoverSessionAfterReconnect(chargerId);
 
     if (session) {
-      console.log(`🔄 Active session found for ${chargerId}: ${session.transactionId}`);
+      console.log(
+        `🔄 Active session found for ${chargerId}: ${session.transactionId}`,
+      );
       // The charger will send StatusNotification and MeterValues
       // which will continue the session naturally
     }
@@ -278,13 +352,16 @@ async function handleChargerReconnection(chargerId) {
       },
     });
   } catch (error) {
-    console.error(`Error handling reconnection for ${chargerId}:`, error.message);
+    console.error(
+      `Error handling reconnection for ${chargerId}:`,
+      error.message,
+    );
   }
 }
 
 /**
  * Handle charger disconnection
- * 
+ *
  * @param {string} chargerId
  * @param {number} code - Close code
  * @param {Buffer} reason - Close reason
@@ -321,7 +398,7 @@ async function handleChargerDisconnection(chargerId, code, reason) {
 
 /**
  * Get WebSocket connection for a charger
- * 
+ *
  * @param {string} chargerId
  * @returns {WebSocket|null}
  */
@@ -331,7 +408,7 @@ export function getChargerConnection(chargerId) {
 
 /**
  * Check if a charger is online
- * 
+ *
  * @param {string} chargerId
  * @returns {boolean}
  */
@@ -342,7 +419,7 @@ export function isChargerOnline(chargerId) {
 
 /**
  * Get all connected charger IDs
- * 
+ *
  * @returns {string[]}
  */
 export function getConnectedChargerIds() {
@@ -351,7 +428,7 @@ export function getConnectedChargerIds() {
 
 /**
  * Get charger connection metadata
- * 
+ *
  * @param {string} chargerId
  * @returns {object|null}
  */
