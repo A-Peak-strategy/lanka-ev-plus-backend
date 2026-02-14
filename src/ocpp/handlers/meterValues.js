@@ -4,6 +4,7 @@ import { getChargerState, updateChargerState } from "../../services/chargerStore
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
+import sessionLiveService from "../../services/sessionLive.service.js";
 
 /**
  * OCPP MeterValues Handler
@@ -31,6 +32,8 @@ import billingService from "../../services/billing.service.js";
  */
 export default async function meterValues(ws, messageId, chargerId, payload) {
   const { connectorId, transactionId, meterValue } = payload;
+
+  console.log(`[METER] ${chargerId}: Received meter values in Handler`, JSON.stringify(meterValue, null, 2));
 
   // Validate payload
   if (!meterValue || meterValue.length === 0) {
@@ -60,6 +63,24 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
 
   const energyWh = readings.energy;
 
+  //? update the charger state with the latest meter value and time. This is used for real-time status API and to calculate energy used.
+  //? Update live session snapshot (USED BY MOBILE APP)
+  try {
+    await sessionLiveService.upsertLiveMeter({
+      sessionId: chargerState.sessionId,
+      transactionId: activeTransactionId,
+      chargerId,
+      connectorId,
+      readings,
+      energyWh,
+      meterTimestamp: new Date(meterValue[meterValue.length - 1].timestamp)
+    });
+    console.log(`[METER] ${chargerId}: Live session updated with ${energyWh}Wh`);
+  } catch (error) {
+    console.error(`[METER] Live session update failed:`, error.message);
+  }
+
+
   // Update meterStart if this is the first reading
   if (chargerState && !chargerState.meterStart) {
     chargerState.meterStart = energyWh;
@@ -73,8 +94,8 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   });
 
   // Calculate energy used in this session
-  const energyUsed = chargerState?.meterStart 
-    ? energyWh - chargerState.meterStart 
+  const energyUsed = chargerState?.meterStart
+    ? energyWh - chargerState.meterStart
     : 0;
 
   // Process billing directly (NOT via event emitter to avoid double billing)
@@ -142,7 +163,7 @@ function extractMeterReadings(meterValue) {
 
   // Get the most recent meter value entry
   const lastEntry = meterValue[meterValue.length - 1];
-  
+
   if (!lastEntry || !lastEntry.sampledValue) {
     return readings;
   }

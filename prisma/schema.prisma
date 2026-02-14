@@ -271,7 +271,7 @@ model ChargingSession {
   id              Int       @id @default(autoincrement())
   
   // Unique transaction identifier
-  transactionId   String    @unique
+  transactionId   Int    @unique
   
   // Relations
   chargerId       String
@@ -314,6 +314,8 @@ model ChargingSession {
   charger         Charger   @relation(fields: [chargerId], references: [id])
   connector       Connector? @relation(fields: [connectorId], references: [id])
   user            User?     @relation(fields: [userId], references: [id])
+
+  live            ChargingSessionLive?
 
   @@index([chargerId])
   @@index([userId])
@@ -426,7 +428,7 @@ model GracePeriodJob {
   id              String    @id @default(uuid())
   
   sessionId       Int       @unique
-  transactionId   String    @unique
+  transactionId   Int    @unique
   userId          String
   
   // Job details
@@ -497,7 +499,7 @@ model SettlementItem {
   
   settlementId    String
   sessionId       Int
-  transactionId   String
+  transactionId   Int
   
   // Session details
   energyWh        Int
@@ -611,4 +613,58 @@ enum PaymentStatus {
   CANCELLED         // User cancelled payment
   EXPIRED           // Payment expired
   REFUNDED          // Payment refunded
+}
+
+// save meter Values for live session tracking and billing accuracy during charging 
+model ChargingSessionLive {
+  id              String   @id @default(uuid())
+
+  // Relation
+  transactionId   Int   @unique
+  sessionId       Int      @unique
+
+  chargerId       String
+  connectorId     Int
+
+  // Latest meter snapshot (Wh, W, V, A)
+  energyWh        Int
+  powerW          Int?
+  voltageV        Float?
+  currentA        Float?
+
+  // Optional EV data (nullable)
+  socPercent      Int?
+  temperatureC    Float?
+
+  // Timing
+  lastMeterAt     DateTime
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  session         ChargingSession @relation(fields: [transactionId], references: [transactionId])
+
+  @@index([transactionId])
+  @@index([chargerId])
+  @@index([updatedAt])
+}
+
+model ChargerRuntimeState {
+  chargerId            String   @id
+  connectorId          Int
+  status               ConnectorStatus
+  internalTransactionId String?  @unique
+  ocppTransactionId    Int?
+  idTag                String?
+  userId               String?
+  meterStartWh         Int?
+  lastMeterValueWh     Int?
+  sessionStartTime     DateTime?
+  updatedAt            DateTime @updatedAt
+  createdAt            DateTime @default(now())
+
+  charger              Charger   @relation(fields: [chargerId], references: [id])
+
+  @@index([chargerId])
+  @@index([ocppTransactionId])
+  @@index([status])
 }

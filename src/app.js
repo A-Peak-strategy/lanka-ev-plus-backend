@@ -6,6 +6,7 @@ import walletRoutes from "./api/wallet.routes.js";
 import bookingRoutes from "./api/booking.routes.js";
 import adminRoutes from "./api/admin.routes.js";
 import paymentRoutes from "./api/payment.routes.js";
+import connectorRoutes from "./api/connector.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
 
 const app = express();
@@ -50,7 +51,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (req.path !== "/health") {
-      console.log(`[API] ${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
+      // console.log(`[API] ${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
     }
   });
   next();
@@ -114,6 +115,7 @@ app.use("/api/chargers", chargerRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/connectors", connectorRoutes);
 app.use("/api", adminRoutes);
 
 // ============================================

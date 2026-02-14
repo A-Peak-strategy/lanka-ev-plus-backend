@@ -133,6 +133,8 @@ export const getChargerStatus = (req, res, next) => {
       throw new NotFoundError("Charger", chargerId);
     }
 
+    // console.log("memState : ", JSON.stringify(memState,null,2));
+
     res.json({
       success: true,
       chargerId,
@@ -294,3 +296,43 @@ export const getChargerSessions = async (req, res, next) => {
     next(error);
   }
 };
+
+//? Get live session data for mobile app (used for real-time updates during charging)
+export async function getLiveSession(req, res) {
+  const { transactionId } = req.params;
+  const txId  = Number(transactionId);
+
+  if (isNaN(txId)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid transactionId format"
+    });
+  }
+
+  const live = await prisma.chargingSessionLive.findUnique({
+    where: { transactionId: txId }
+  });
+
+  if (!live) {
+    return res.status(404).json({
+      success: false,
+      message: "Live session not found"
+    });
+  }
+
+  console.log("[LIVE DATA ] : Retrieved LIve data and pass to FE  ", JSON.stringify(live,null,2));
+
+  res.json({
+    success: true,
+    data: {
+      energyWh: live.energyWh,
+      powerW: live.powerW,
+      voltageV: live.voltageV,
+      currentA: live.currentA,
+      socPercent: live.socPercent,
+      temperatureC: live.temperatureC,
+      lastUpdated: live.lastMeterAt
+    }
+  });
+}
+

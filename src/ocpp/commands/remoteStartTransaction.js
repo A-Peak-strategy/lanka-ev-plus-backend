@@ -72,7 +72,7 @@ export async function remoteStartTransaction(chargerId, options) {
 
     const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
 
-    console.log(`[CMD] RemoteStartTransaction ← ${chargerId}: ${response.status}`);
+    console.log(`[CMD] RemoteStartTransaction ← ${chargerId}: ${JSON.stringify(response)}`);
 
     return {
       success: accepted,

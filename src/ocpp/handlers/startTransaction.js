@@ -39,6 +39,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     meterStart,
     reservationId,
     timestamp,
+    status,
   } = payload;
 
   const startTime = timestamp ? new Date(timestamp) : new Date();
@@ -103,7 +104,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
 
   // Update charger state - store both IDs for cross-reference
   updateChargerState(chargerId, {
-    status: "Charging",
+    status: status || "Charging",
     transactionId: internalTransactionId,       // Internal string ID for billing/ledger
     ocppTransactionId: ocppTransactionId,        // Integer ID sent to charger
     connectorId,
@@ -114,6 +115,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
+
+  
 
   // Mark booking as used if applicable
   if (authResult.bookingId) {
