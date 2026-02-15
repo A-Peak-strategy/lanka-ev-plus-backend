@@ -45,7 +45,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
 
   // Resolve OCPP integer transactionId to internal string transactionId
   // Priority: charger state (fastest) > DB lookup by session.id
-  const chargerState = getChargerState(chargerId);
+  const chargerState = await getChargerState(chargerId);
   let activeTransactionId = chargerState?.transactionId;
 
   if (!activeTransactionId && transactionId) {

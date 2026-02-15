@@ -39,6 +39,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     meterStart,
     reservationId,
     timestamp,
+    status,
   } = payload;
 
   const startTime = timestamp ? new Date(timestamp) : new Date();
@@ -93,6 +94,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     pricePerKwh: pricing?.pricePerKwh,
   });
 
+
   if (duplicate) {
     console.log(`[START] Duplicate transaction: ${internalTransactionId}`);
   }
@@ -102,18 +104,22 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const ocppTransactionId = session.id;
 
   // Update charger state - store both IDs for cross-reference
-  updateChargerState(chargerId, {
-    status: "Charging",
-    transactionId: internalTransactionId,       // Internal string ID for billing/ledger
-    ocppTransactionId: ocppTransactionId,        // Integer ID sent to charger
+  await updateChargerState(chargerId, {
+    status: status || "CHARGING",
+    internalTransactionId: internalTransactionId,   // ✅ CORRECT
+    transactionId: session.transactionId,  // internal
+    ocppTransactionId: session.id,                 // session PK
     connectorId,
-    meterStart,
-    lastMeterValue: meterStart,
+    meterStartWh: meterStart,
+    lastMeterValueWh: meterStart,
     idTag,
     userId,
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
+
+
+
 
   // Mark booking as used if applicable
   if (authResult.bookingId) {
@@ -198,7 +204,7 @@ async function checkStartAuthorization(chargerId, connectorId, idTag, reservatio
 async function validateReservation(chargerId, connectorId, reservationId, idTag) {
   // Find booking by hashed reservation ID
   // This is a reverse lookup - in production you might store the reservationId in the booking
-  
+
   const connector = await prisma.connector.findFirst({
     where: { chargerId, connectorId },
   });
@@ -220,7 +226,7 @@ async function validateReservation(chargerId, connectorId, reservationId, idTag)
 
   // Check if the user matches the booking
   const userId = await resolveUserFromIdTag(idTag);
-  
+
   if (userId && activeBooking.userId === userId) {
     return { valid: true };
   }
@@ -300,7 +306,7 @@ async function checkUserAuthorization(idTag) {
   }
 
   const balance = new Decimal(wallet.balance.toString());
-  
+
   // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
   if (balance.lte(0)) {
     return {

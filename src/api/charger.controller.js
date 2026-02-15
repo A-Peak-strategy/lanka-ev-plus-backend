@@ -75,7 +75,7 @@ export const getAllChargers = async (req, res, next) => {
 export const getCharger = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
-    
+
     // Validate chargerId
     validateChargerId(chargerId);
 
@@ -123,9 +123,9 @@ export const getCharger = async (req, res, next) => {
 export const getChargerStatus = (req, res, next) => {
   try {
     const { chargerId } = req.params;
-    
+
     validateChargerId(chargerId);
-    
+
     const memState = chargersStore.get(chargerId);
     const online = isChargerOnline(chargerId);
 
@@ -133,17 +133,20 @@ export const getChargerStatus = (req, res, next) => {
       throw new NotFoundError("Charger", chargerId);
     }
 
+    // console.log("memState : ", JSON.stringify(memState,null,2));
+
     res.json({
       success: true,
       chargerId,
       online,
       status: memState?.status || "Unknown",
       connectorId: memState?.connectorId,
-      transactionId: memState?.transactionId,
-      meterWh: memState?.lastMeterValue,
-      meterStart: memState?.meterStart,
-      energyUsedWh: memState?.meterStart 
-        ? (memState.lastMeterValue || 0) - memState.meterStart 
+      transactionId: memState?.transactionId ?? memState?.ocppTransactionId,
+      ocppTransactionId: memState?.ocppTransactionId,
+      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh,
+      meterStart: memState?.meterStart ?? memState?.meterStartWh,
+      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
+        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
         : null,
       lastHeartbeat: memState?.lastHeartbeat,
       lastMeterTime: memState?.lastMeterTime,
@@ -215,7 +218,7 @@ export const startCharging = async (req, res, next) => {
 export const stopCharging = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
-    
+
     validateChargerId(chargerId);
 
     // Check if charger is online
@@ -225,7 +228,7 @@ export const stopCharging = async (req, res, next) => {
 
     // Check for active transaction
     const memState = chargersStore.get(chargerId);
-    if (!memState?.transactionId) {
+    if (!memState?.transactionId && !memState?.ocppTransactionId) {
       throw new ConflictError(
         "No active transaction to stop",
         "NO_ACTIVE_TRANSACTION"
@@ -250,6 +253,7 @@ export const stopCharging = async (req, res, next) => {
       );
     }
   } catch (error) {
+    console.error(`[STOP] Error stopping charger ${req.params.chargerId}:`, error.message, error.stack);
     next(error);
   }
 };
@@ -263,7 +267,7 @@ export const getChargerSessions = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
     const { limit = 20, offset = 0, active } = req.query;
-    
+
     validateChargerId(chargerId);
 
     const where = { chargerId };
@@ -294,3 +298,49 @@ export const getChargerSessions = async (req, res, next) => {
     next(error);
   }
 };
+
+//? Get live session data for mobile app (used for real-time updates during charging)
+export async function getLiveSession(req, res) {
+  const { transactionId } = req.params;
+  const txId = Number(transactionId);
+
+  if (isNaN(txId)) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid transactionId format"
+    });
+  }
+
+  const sessionId = Number(req.params.transactionId);
+
+  if (isNaN(sessionId)) {
+    return res.status(400).json({ success: false });
+  }
+
+  const live = await prisma.chargingSessionLive.findUnique({
+    where: { sessionId },
+  });
+
+  if (!live) {
+    return res.status(404).json({
+      success: false,
+      message: "Live session not found"
+    });
+  }
+
+  console.log("[LIVE DATA ] : Retrieved LIve data and pass to FE  ", JSON.stringify(live, null, 2));
+
+  res.json({
+    success: true,
+    data: {
+      energyWh: live.energyWh,
+      powerW: live.powerW,
+      voltageV: live.voltageV,
+      currentA: live.currentA,
+      socPercent: live.socPercent,
+      temperatureC: live.temperatureC,
+      lastUpdated: live.lastMeterAt
+    }
+  });
+}
+

@@ -56,7 +56,7 @@ export default async function statusNotification(ws, messageId, chargerId, paylo
   await updateConnectorStatus(chargerId, connectorId, status, errorCode);
 
   // Send empty response
-  sendCallResult(ws, messageId, {});
+  sendCallResult(ws, messageId, {}); 
 }
 
 /**

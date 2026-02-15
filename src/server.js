@@ -7,6 +7,7 @@ import { syncChargerToDb } from "./services/chargerPersistence.service.js";
 import { initializeFirebase } from "./config/firebase.js";
 import { checkRedisAvailable } from "./config/redis.js";
 import { validateEnv } from "./config/env.js";
+import { startMobileSocket } from "./realtime/mobileSocket.js";
 
 // Validate environment variables before anything else
 validateEnv();
@@ -24,6 +25,7 @@ const server = http.createServer(app);
 
 // Start OCPP WebSocket server
 startOcppServer(server);
+// startMobileSocket(server);
 
 // Start background workers (only if Redis is available)
 async function startWorkers() {
