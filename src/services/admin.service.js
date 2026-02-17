@@ -50,6 +50,7 @@ export async function createOwner(data, adminId) {
       name,
       role: "OWNER",
       isActive: true,
+      ocppIdTag: makeOcppIdTag(),
     },
   });
 
@@ -72,6 +73,11 @@ export async function createOwner(data, adminId) {
   });
 
   return owner;
+}
+
+function makeOcppIdTag() {
+  // 12 chars, safe
+  return "O" + crypto.randomBytes(6).toString("hex").toUpperCase(); 
 }
 
 /**

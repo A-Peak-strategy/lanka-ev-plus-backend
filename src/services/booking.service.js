@@ -132,7 +132,7 @@ export async function createBooking(params) {
   const config = getStationConfig(station);
   const expiryTime = new Date(
     new Date(startTime).getTime() +
-      (durationMinutes + config.gracePeriodMinutes) * 60 * 1000,
+    (durationMinutes + config.gracePeriodMinutes) * 60 * 1000,
   );
 
   // Create booking in database
@@ -360,7 +360,7 @@ export async function handleBookingExpiry(bookingId) {
   // Cancel OCPP reservation
   if (isChargerOnline(connector.chargerId)) {
     const reservationId = hashStringToNumber(bookingId);
-    await cancelReservation(connector.chargerId, reservationId).catch(() => {});
+    await cancelReservation(connector.chargerId, reservationId).catch(() => { });
   }
 
   // Apply no-show penalty if enabled
@@ -564,8 +564,10 @@ export async function getConnectorBookings(
     where: {
       connectorId: connector.id,
       status: "ACTIVE",
-      startTime: {
+      expiryTime: {
         gte: now,
+      },
+      startTime: {
         lte: future,
       },
     },
@@ -573,9 +575,10 @@ export async function getConnectorBookings(
   });
 
   return bookings.map((b) => ({
+    id: b.id,
     startTime: b.startTime,
     expiryTime: b.expiryTime,
-    // Don't expose user info in public endpoint
+    status: b.status,
   }));
 }
 
@@ -809,11 +812,11 @@ function formatBookingResponse(booking) {
     status: booking.status,
     charger: booking.connector?.charger
       ? {
-          id: booking.connector.charger.id,
-          connectorId: booking.connector.connectorId,
-          station: booking.connector.charger.station?.name,
-          address: booking.connector.charger.station?.address,
-        }
+        id: booking.connector.charger.id,
+        connectorId: booking.connector.connectorId,
+        station: booking.connector.charger.station?.name,
+        address: booking.connector.charger.station?.address,
+      }
       : null,
     createdAt: booking.createdAt,
   };

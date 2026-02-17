@@ -3,58 +3,35 @@ import prisma from "../config/db.js";
 
 class SessionLiveService {
 
-    async upsertLiveMeter({
-        sessionId,
-        transactionId,
-        chargerId,
-        connectorId,
-        readings,
-        energyWh,
-        meterTimestamp
-    }) {
+    async upsertLiveMeter({ sessionId, transactionId, chargerId, connectorId, readings, energyWh, meterTimestamp }) {
         return prisma.chargingSessionLive.upsert({
-            where: {
-                transactionId,
-            },
+            where: { sessionId }, // ✅ sessionId is UNIQUE
             update: {
+                transactionId: transactionId ?? null,
                 energyWh,
-                powerW: readings.power ?? 0,
-                voltageV: readings.voltage,
-                currentA: readings.current,
-                socPercent: readings.soc,
-                temperatureC: readings.temperature,
+                powerW: readings.power ?? null,
+                voltageV: readings.voltage ?? null,
+                currentA: readings.current ?? null,
+                socPercent: readings.soc ?? null,
+                temperatureC: readings.temperature ?? null,
                 lastMeterAt: meterTimestamp,
             },
             create: {
-                transactionId,
+                transactionId: transactionId ?? null,
                 chargerId,
                 connectorId,
                 energyWh,
-                powerW: readings.power ?? 0,
-                voltageV: readings.voltage,
-                currentA: readings.current,
-                socPercent: readings.soc,
-                temperatureC: readings.temperature,
+                powerW: readings.power ?? null,
+                voltageV: readings.voltage ?? null,
+                currentA: readings.current ?? null,
+                socPercent: readings.soc ?? null,
+                temperatureC: readings.temperature ?? null,
                 lastMeterAt: meterTimestamp,
-
-                // session: {
-                //     connect: { transactionId },
-                // },
-                session: {
-                    connectOrCreate: {
-                        where: { transactionId },
-                        create: {
-                            transactionId,
-                            chargerId,
-                            connectorId: String(connectorId),
-                            startedAt: new Date(),  
-                        },
-                    },
-                },
-
+                session: { connect: { id: sessionId } }, // ✅ connect by ChargingSession.id
             },
         });
     }
+
 
     async getLiveByTransaction(transactionId) {
         return prisma.chargingSessionLive.findUnique({

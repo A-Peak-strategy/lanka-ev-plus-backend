@@ -1,3 +1,4 @@
+import prisma from "../../config/db.js";
 import { sendCall } from "../messageQueue.js";
 import { CStoCPAction, RemoteStartStopStatus } from "../ocppConstants.js";
 import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
@@ -105,13 +106,21 @@ export async function remoteStartTransaction(chargerId, options) {
 export async function startChargingForUser(params) {
   const { chargerId, userId, connectorId = 1 } = params;
 
-  // Use userId as idTag (or look up user's RFID tag)
-  const idTag = userId;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user?.ocppIdTag) throw new Error("User ocppIdTag missing");
 
   return remoteStartTransaction(chargerId, {
-    idTag,
+    idTag: user.ocppIdTag,
     connectorId,
   });
+
+  // // Use userId as idTag (or look up user's RFID tag)
+  // const idTag = userId;
+
+  // return remoteStartTransaction(chargerId, {
+  //   idTag,
+  //   connectorId,
+  // });
 }
 
 export default {

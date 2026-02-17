@@ -7,6 +7,7 @@ import bookingRoutes from "./api/booking.routes.js";
 import adminRoutes from "./api/admin.routes.js";
 import paymentRoutes from "./api/payment.routes.js";
 import connectorRoutes from "./api/connector.routes.js";
+import userRoutes from "./api/user.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
 
 const app = express();
@@ -116,6 +117,7 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/connectors", connectorRoutes);
+app.use("/api/user", userRoutes);
 app.use("/api", adminRoutes);
 
 // ============================================

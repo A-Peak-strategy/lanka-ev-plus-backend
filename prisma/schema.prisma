@@ -12,8 +12,9 @@ datasource db {
 // ============================================
 
 model User {
-  id            String    @id @default(uuid())
+  id            String    @id @default(uuid()) 
   firebaseUid   String    @unique
+  ocppIdTag     String    @unique @db.VarChar(191)
   email         String?   @unique
   phone         String?   @unique
   name          String?
@@ -209,6 +210,8 @@ model Charger {
   station         Station?  @relation(fields: [stationId], references: [id])
   connectors      Connector[]
   sessions        ChargingSession[]
+
+  runtimeState    ChargerRuntimeState?
 
   @@index([stationId])
   @@index([serialNumber])
@@ -617,54 +620,64 @@ enum PaymentStatus {
 
 // save meter Values for live session tracking and billing accuracy during charging 
 model ChargingSessionLive {
-  id              String   @id @default(uuid())
+  id           String   @id @default(uuid())
 
-  // Relation
-  transactionId   Int   @unique
-  sessionId       Int      @unique
+  // FK to ChargingSession.id (OCPP transaction id)
+  sessionId    Int      @unique
+  session      ChargingSession @relation(fields: [sessionId], references: [id])
 
-  chargerId       String
-  connectorId     Int
+  // Optional: store internal transactionId too (nice for queries)
+  transactionId Int?     
 
-  // Latest meter snapshot (Wh, W, V, A)
-  energyWh        Int
-  powerW          Int?
-  voltageV        Float?
-  currentA        Float?
+  chargerId    String
+  connectorId  Int
 
-  // Optional EV data (nullable)
-  socPercent      Int?
-  temperatureC    Float?
+  energyWh     Int
+  powerW       Int?
+  voltageV     Float?
+  currentA     Float?
+  socPercent   Int?
+  temperatureC Float?
 
-  // Timing
-  lastMeterAt     DateTime
-  updatedAt       DateTime @updatedAt
-  createdAt       DateTime @default(now())
+  lastMeterAt  DateTime
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
 
-  session         ChargingSession @relation(fields: [transactionId], references: [transactionId])
-
-  @@index([transactionId])
   @@index([chargerId])
   @@index([updatedAt])
+  @@index([transactionId])
 }
 
+// Runtime state of charger and connector for quick access without joining sessions
 model ChargerRuntimeState {
-  chargerId            String   @id
-  connectorId          Int
-  status               ConnectorStatus
-  internalTransactionId String?  @unique
-  ocppTransactionId    Int?
-  idTag                String?
-  userId               String?
-  meterStartWh         Int?
-  lastMeterValueWh     Int?
-  sessionStartTime     DateTime?
-  updatedAt            DateTime @updatedAt
-  createdAt            DateTime @default(now())
+  chargerId             String   @id
+  connectorId           Int
+  status                ConnectorStatus
 
-  charger              Charger   @relation(fields: [chargerId], references: [id])
+  // runtime extras you already send
+  connectionStatus      ConnectionState?
+  errorCode             String?
+  lastStatusUpdate      DateTime?
+  bookingId             String?
+
+  internalTransactionId Int?  @unique
+  ocppTransactionId     Int?
+  idTag                 String?
+  userId                String?
+  transactionId         Int? 
+
+  meterStartWh          Int?
+  lastMeterValueWh      Int?
+  sessionStartTime      DateTime?
+
+  updatedAt             DateTime @updatedAt
+  createdAt             DateTime @default(now())
+
+  charger               Charger   @relation(fields: [chargerId], references: [id])
 
   @@index([chargerId])
   @@index([ocppTransactionId])
   @@index([status])
+  @@index([connectionStatus])
+  @@index([transactionId])
 }

@@ -1,5 +1,7 @@
 import admin  from "../config/firebase.js";
 import prisma from "../config/db.js";
+import crypto from "crypto";
+
 
 /**
  * Authentication Middleware
@@ -40,6 +42,7 @@ export async function verifyToken(req, res, next) {
           phone: decodedToken.phone_number,
           name: decodedToken.name,
           role: "CONSUMER",
+          ocppIdTag: makeOcppIdTag(),
         },
       });
       
@@ -73,6 +76,14 @@ export async function verifyToken(req, res, next) {
       error: "Invalid token",
     });
   }
+}
+
+/**
+ * Generate unique OCPP ID tag for user
+ */
+function makeOcppIdTag() {
+  // 12 chars, safe
+  return "U" + crypto.randomBytes(6).toString("hex").toUpperCase();
 }
 
 /**

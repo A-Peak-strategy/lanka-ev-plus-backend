@@ -94,6 +94,19 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     pricePerKwh: pricing?.pricePerKwh,
   });
 
+  if (!session) {
+    console.log(`[START] Failed to create session for transaction ${internalTransactionId}`);
+    sendCallResult(ws, messageId, {
+      transactionId: 0,
+      idTagInfo: {
+        status: AuthorizationStatus.REJECTED,
+      },
+    });
+    return;
+  }
+
+  console.warn(`[START Session >>>>>>.......................] Session created: ${session.id}, session.transactionId: ${session.transactionId}, internalTransactionId: ${internalTransactionId}`);
+
   if (duplicate) {
     console.log(`[START] Duplicate transaction: ${internalTransactionId}`);
   }
@@ -103,20 +116,22 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const ocppTransactionId = session.id;
 
   // Update charger state - store both IDs for cross-reference
-  updateChargerState(chargerId, {
-    status: status || "Charging",
-    transactionId: internalTransactionId,       // Internal string ID for billing/ledger
-    ocppTransactionId: ocppTransactionId,        // Integer ID sent to charger
+  await updateChargerState(chargerId, {
+    status: status || "CHARGING",
+    internalTransactionId: internalTransactionId,   // ✅ CORRECT
+    transactionId: session.transactionId,  // internal
+    ocppTransactionId: session.id,                 // session PK
     connectorId,
-    meterStart,
-    lastMeterValue: meterStart,
+    meterStartWh: meterStart,
+    lastMeterValueWh: meterStart,
     idTag,
     userId,
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
 
-  
+
+
 
   // Mark booking as used if applicable
   if (authResult.bookingId) {
@@ -201,7 +216,7 @@ async function checkStartAuthorization(chargerId, connectorId, idTag, reservatio
 async function validateReservation(chargerId, connectorId, reservationId, idTag) {
   // Find booking by hashed reservation ID
   // This is a reverse lookup - in production you might store the reservationId in the booking
-  
+
   const connector = await prisma.connector.findFirst({
     where: { chargerId, connectorId },
   });
@@ -223,7 +238,7 @@ async function validateReservation(chargerId, connectorId, reservationId, idTag)
 
   // Check if the user matches the booking
   const userId = await resolveUserFromIdTag(idTag);
-  
+
   if (userId && activeBooking.userId === userId) {
     return { valid: true };
   }
@@ -303,7 +318,7 @@ async function checkUserAuthorization(idTag) {
   }
 
   const balance = new Decimal(wallet.balance.toString());
-  
+
   // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
   if (balance.lte(0)) {
     return {
@@ -321,18 +336,23 @@ async function checkUserAuthorization(idTag) {
 /**
  * Resolve user ID from idTag
  */
-async function resolveUserFromIdTag(idTag) {
-  const user = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { id: idTag },
-        { firebaseUid: idTag },
-      ],
-    },
-  });
+// async function resolveUserFromIdTag(idTag) {
+//   const user = await prisma.user.findFirst({
+//     where: {
+//       OR: [
+//         { id: idTag },
+//         { firebaseUid: idTag },
+//       ],
+//     },
+//   });
 
-  return user?.id || null;
+//   return user?.id || null;
+// }
+async function resolveUserFromIdTag(idTag) {
+  const user = await prisma.user.findUnique({ where: { ocppIdTag: idTag } });
+  return user?.id ?? null;
 }
+
 
 /**
  * Get expiry date

@@ -1,41 +1,46 @@
+import {
+  getChargerStateAPI,
+  updateChargerStateAPI,
+  updateMeterValueAPI,
+  getAllChargerStatesAPI,
+} from "./chargerRuntime.service.js";
+
 const chargersStore = new Map();
 
-// export const getChargerState = (id) => chargersStore.get(id);
+// READ: cache -> DB fallback
+export async function getChargerState(chargerId) {
+  const cached = chargersStore.get(chargerId);
+  if (cached) return cached;
 
-/**
- * Get charger state
- */
-export function getChargerState(chargerId) {
-  return chargersStore.get(chargerId);
+  const dbState = await getChargerStateAPI(chargerId);
+
+  if (dbState) {
+    chargersStore.set(chargerId, dbState);
+  }
+
+  return dbState; // ✅ return DB if cache miss
 }
 
-/**
- * Update charger state
- */
-export function updateChargerState(chargerId, update) {
-  const charger = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, { ...charger, ...update });
+// WRITE: DB first -> cache sync
+export async function updateChargerState(chargerId, update) {
+  const updated = await updateChargerStateAPI(chargerId, update);
+  chargersStore.set(chargerId, updated);
+  return updated;
 }
 
-/**
- * Update last meter reading
- */
-export function updateMeterValue(chargerId, meterWh) {
-  const charger = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, { ...charger, lastMeterValue: meterWh });
+// WRITE meter: DB first -> cache sync
+export async function updateMeterValue(chargerId, meterWh) {
+  const updated = await updateMeterValueAPI(chargerId, meterWh);
+  chargersStore.set(chargerId, updated);
+  return updated;
 }
 
-export const getAllChargerStates = () =>
-  Array.from(chargersStore.values());
+export async function getAllChargerStates() {
+  const rows = await getAllChargerStatesAPI();
+  // hydrate cache (optional)
+  for (const st of rows) chargersStore.set(st.chargerId, st);
+  return rows;
+}
 
-// export const updateChargerState = (id, data) => {
-//   chargersStore.set(id, {
-//     ...(chargersStore.get(id) || {}),
-//     chargerId: id,
-//     ...data,
-//     updatedAt: new Date(),
-//   });
-// };
-
-export { chargersStore }; // <-- named export
-export default chargersStore; // <-- default export
+export { chargersStore };
+export default chargersStore;

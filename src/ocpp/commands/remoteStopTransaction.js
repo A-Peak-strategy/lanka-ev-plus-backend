@@ -50,7 +50,7 @@ export async function remoteStopTransaction(chargerId, transactionIdOrInternal) 
   // 2. If input is already integer, use directly
   // 3. If input is string (internal ID), look up session.id from DB
   let ocppTxId;
-  const chargerState = getChargerState(chargerId);
+  const chargerState = await getChargerState(chargerId);
 
   if (chargerState?.ocppTransactionId) {
     // Best case: we have the integer ID in memory
@@ -119,7 +119,7 @@ export async function remoteStopTransaction(chargerId, transactionIdOrInternal) 
  */
 export async function stopChargingAtCharger(chargerId) {
   // Get active transaction from charger state
-  const chargerState = getChargerState(chargerId);
+  const chargerState = await getChargerState(chargerId);
   
   if (!chargerState?.ocppTransactionId && !chargerState?.transactionId) {
     // Try to find from database
