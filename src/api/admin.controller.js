@@ -1,8 +1,12 @@
 import adminService from "../services/admin.service.js";
 import settlementService from "../services/settlement.service.js";
+import qrCodeService from "../services/qrCode.service.js";
 import prisma from "../config/db.js";
-import chargerStore from "../services/chargerStore.service.js";
+import { chargersStore } from "../services/chargerStore.service.js";
+import { isChargerOnline } from "../ocpp/ocppServer.js";
 import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
+import { remoteStartTransaction } from "../ocpp/commands/remoteStartTransaction.js";
+import { v4 as uuidv4 } from "uuid";
 
 /**
  * Admin Controller
@@ -29,7 +33,7 @@ export async function createOwner(req, res) {
   try {
     const adminId = req.user?.id || "system"; // Get from auth middleware
     const owner = await adminService.createOwner(req.body, adminId);
-    
+
     res.status(201).json({
       success: true,
       data: owner,
@@ -51,14 +55,14 @@ export async function createOwner(req, res) {
 export async function getUsers(req, res) {
   try {
     const { role, isActive, limit, offset } = req.query;
-    
+
     const users = await adminService.getUsers({
       role,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: users,
@@ -79,9 +83,9 @@ export async function updateUserStatus(req, res) {
     const { userId } = req.params;
     const { isActive } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     const user = await adminService.updateUserStatus(userId, isActive, adminId);
-    
+
     res.json({
       success: true,
       data: user,
@@ -104,7 +108,7 @@ export async function registerCharger(req, res) {
   try {
     const adminId = req.user?.id || "system";
     const charger = await adminService.registerCharger(req.body, adminId);
-    
+
     res.status(201).json({
       success: true,
       data: charger,
@@ -123,7 +127,7 @@ export async function registerCharger(req, res) {
 export async function getChargers(req, res) {
   try {
     const { stationId, status, isRegistered, limit, offset } = req.query;
-    
+
     const chargers = await adminService.getChargers({
       stationId,
       status,
@@ -131,7 +135,7 @@ export async function getChargers(req, res) {
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: chargers,
@@ -144,6 +148,21 @@ export async function getChargers(req, res) {
 }
 
 /**
+ * Get single charger by ID
+ * GET /api/admin/chargers/:chargerId
+ */
+export async function getChargerById(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const charger = await adminService.getChargerById(chargerId);
+    res.json({ success: true, data: charger });
+  } catch (error) {
+    console.error("Get charger by ID error:", error);
+    res.status(404).json({ success: false, error: error.message });
+  }
+}
+
+/**
  * Assign charger to station
  * POST /api/admin/chargers/:chargerId/assign
  */
@@ -152,9 +171,9 @@ export async function assignChargerToStation(req, res) {
     const { chargerId } = req.params;
     const { stationId } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     const charger = await adminService.assignChargerToStation(chargerId, stationId, adminId);
-    
+
     res.json({
       success: true,
       data: charger,
@@ -178,7 +197,7 @@ export async function createStation(req, res) {
   try {
     const adminId = req.user?.id || "system";
     const station = await adminService.createStation(req.body, adminId);
-    
+
     res.status(201).json({
       success: true,
       data: station,
@@ -197,14 +216,14 @@ export async function createStation(req, res) {
 export async function getStations(req, res) {
   try {
     const { ownerId, isActive, limit, offset } = req.query;
-    
+
     const stations = await adminService.getStations({
       ownerId,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: stations,
@@ -225,9 +244,9 @@ export async function assignStationToOwner(req, res) {
     const { stationId } = req.params;
     const { ownerId } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     const station = await adminService.assignStationToOwner(stationId, ownerId, adminId);
-    
+
     res.json({
       success: true,
       data: station,
@@ -251,7 +270,7 @@ export async function createPricing(req, res) {
   try {
     const adminId = req.user?.id || "system";
     const pricing = await adminService.createPricing(req.body, adminId);
-    
+
     res.status(201).json({
       success: true,
       data: pricing,
@@ -271,9 +290,9 @@ export async function updatePricing(req, res) {
   try {
     const { pricingId } = req.params;
     const adminId = req.user?.id || "system";
-    
+
     const pricing = await adminService.updatePricing(pricingId, req.body, adminId);
-    
+
     res.json({
       success: true,
       data: pricing,
@@ -291,7 +310,7 @@ export async function updatePricing(req, res) {
 export async function getPricings(req, res) {
   try {
     const pricings = await adminService.getPricings();
-    
+
     res.json({
       success: true,
       data: pricings,
@@ -311,9 +330,9 @@ export async function assignPricingToStation(req, res) {
     const { stationId } = req.params;
     const { pricingId } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     const station = await adminService.assignPricingToStation(stationId, pricingId, adminId);
-    
+
     res.json({
       success: true,
       data: station,
@@ -336,7 +355,7 @@ export async function assignPricingToStation(req, res) {
 export async function getSessions(req, res) {
   try {
     const { chargerId, userId, stationId, ownerId, startDate, endDate, active, limit, offset } = req.query;
-    
+
     const sessions = await adminService.getSessions({
       chargerId,
       userId,
@@ -348,7 +367,7 @@ export async function getSessions(req, res) {
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: sessions,
@@ -367,14 +386,14 @@ export async function getSessions(req, res) {
 export async function getSessionStats(req, res) {
   try {
     const { startDate, endDate, ownerId, stationId } = req.query;
-    
+
     const stats = await adminService.getSessionStats({
       startDate,
       endDate,
       ownerId,
       stationId,
     });
-    
+
     res.json({
       success: true,
       data: stats,
@@ -396,7 +415,7 @@ export async function getSessionStats(req, res) {
 export async function getOcppLogs(req, res) {
   try {
     const { chargerId, action, direction, startDate, endDate, limit, offset } = req.query;
-    
+
     const logs = await adminService.getOcppLogs({
       chargerId,
       action,
@@ -406,7 +425,7 @@ export async function getOcppLogs(req, res) {
       limit: parseInt(limit) || 100,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: logs,
@@ -429,7 +448,7 @@ export async function getOcppLogs(req, res) {
 export async function getSettlements(req, res) {
   try {
     const { ownerId, status, startDate, endDate, limit, offset } = req.query;
-    
+
     const settlements = await settlementService.getSettlements({
       ownerId,
       status,
@@ -438,7 +457,7 @@ export async function getSettlements(req, res) {
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: settlements,
@@ -457,16 +476,16 @@ export async function getSettlements(req, res) {
 export async function getSettlementById(req, res) {
   try {
     const { settlementId } = req.params;
-    
+
     const settlement = await settlementService.getSettlementById(settlementId);
-    
+
     if (!settlement) {
       return res.status(404).json({
         success: false,
         error: "Settlement not found",
       });
     }
-    
+
     res.json({
       success: true,
       data: settlement,
@@ -484,7 +503,7 @@ export async function getSettlementById(req, res) {
 export async function generateSettlements(req, res) {
   try {
     const result = await settlementService.generateBiWeeklySettlements();
-    
+
     res.status(201).json({
       success: true,
       data: result,
@@ -503,13 +522,13 @@ export async function generateSettlements(req, res) {
 export async function createSettlement(req, res) {
   try {
     const { ownerId, periodStart, periodEnd } = req.body;
-    
+
     const settlement = await settlementService.createSettlement(
       ownerId,
       new Date(periodStart),
       new Date(periodEnd)
     );
-    
+
     if (!settlement) {
       return res.status(200).json({
         success: true,
@@ -517,7 +536,7 @@ export async function createSettlement(req, res) {
         message: "No sessions to settle for this period",
       });
     }
-    
+
     res.status(201).json({
       success: true,
       data: settlement,
@@ -538,20 +557,20 @@ export async function markSettlementPaid(req, res) {
     const { settlementId } = req.params;
     const { paymentRef, paymentMethod, paymentNotes } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     if (!paymentRef) {
       return res.status(400).json({
         success: false,
         error: "Payment reference is required",
       });
     }
-    
+
     const settlement = await settlementService.markSettlementAsPaid(
       settlementId,
       { paymentRef, paymentMethod, paymentNotes },
       adminId
     );
-    
+
     res.json({
       success: true,
       data: settlement,
@@ -572,13 +591,13 @@ export async function markSettlementFailed(req, res) {
     const { settlementId } = req.params;
     const { reason } = req.body;
     const adminId = req.user?.id || "system";
-    
+
     const settlement = await settlementService.markSettlementAsFailed(
       settlementId,
       reason || "Payment failed",
       adminId
     );
-    
+
     res.json({
       success: true,
       data: settlement,
@@ -596,7 +615,7 @@ export async function markSettlementFailed(req, res) {
 export async function getPendingSettlementsSummary(req, res) {
   try {
     const summary = await settlementService.getPendingSettlementsSummary();
-    
+
     res.json({
       success: true,
       data: summary,
@@ -614,9 +633,10 @@ export async function getPendingSettlementsSummary(req, res) {
 export async function getOwnerEarnings(req, res) {
   try {
     const { ownerId } = req.params;
-    
-    const earnings = await settlementService.getOwnerEarningsSummary(ownerId);
-    
+    const { startDate, endDate } = req.query;
+
+    const earnings = await settlementService.getOwnerEarningsSummary(ownerId, { startDate, endDate });
+
     res.json({
       success: true,
       data: earnings,
@@ -624,6 +644,54 @@ export async function getOwnerEarnings(req, res) {
   } catch (error) {
     console.error("Get owner earnings error:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get owner earnings broken down by station
+ * GET /api/admin/owners/:ownerId/earnings-by-station
+ */
+export async function getOwnerEarningsByStation(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    const earnings = await settlementService.getOwnerEarningsByStation(ownerId, { startDate, endDate });
+
+    res.json({
+      success: true,
+      data: earnings,
+    });
+  } catch (error) {
+    console.error("Get owner earnings by station error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Record a payment to an owner
+ * POST /api/admin/owners/:ownerId/payments
+ */
+export async function recordOwnerPayment(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const adminId = req.user?.id || "system";
+    const { amount, paymentRef, paymentMethod, paymentNotes } = req.body;
+
+    const settlement = await settlementService.recordOwnerPayment(
+      ownerId,
+      { amount, paymentRef, paymentMethod, paymentNotes },
+      adminId
+    );
+
+    res.json({
+      success: true,
+      data: settlement,
+      message: "Payment recorded successfully",
+    });
+  } catch (error) {
+    console.error("Record owner payment error:", error);
+    res.status(400).json({ success: false, error: error.message });
   }
 }
 
@@ -638,7 +706,7 @@ export async function getOwnerEarnings(req, res) {
 export async function getAuditLogs(req, res) {
   try {
     const { adminId, action, targetType, startDate, endDate, limit, offset } = req.query;
-    
+
     const logs = await adminService.getAuditLogs({
       adminId,
       action,
@@ -648,7 +716,7 @@ export async function getAuditLogs(req, res) {
       limit: parseInt(limit) || 100,
       offset: parseInt(offset) || 0,
     });
-    
+
     res.json({
       success: true,
       data: logs,
@@ -901,37 +969,38 @@ export default {
   getUserById,
   getUserWallet,
   updateUserStatus,
-  
+
   // Chargers
   registerCharger,
   getChargers,
+  getChargerById,
   assignChargerToStation,
-  
+
   // Stations
   createStation,
   getStations,
   getStationById,
   updateStation,
   assignStationToOwner,
-  
+
   // Pricing
   createPricing,
   updatePricing,
   getPricings,
   assignPricingToStation,
-  
+
   // Sessions
   getSessions,
   getSessionById,
   getSessionStats,
   forceStopSession,
-  
+
   // Dashboard
   getDashboardMetrics,
-  
+
   // OCPP Logs
   getOcppLogs,
-  
+
   // Settlements
   getSettlements,
   getSettlementById,
@@ -941,8 +1010,350 @@ export default {
   markSettlementFailed,
   getPendingSettlementsSummary,
   getOwnerEarnings,
-  
+  getOwnerEarningsByStation,
+  recordOwnerPayment,
+
   // Audit
   getAuditLogs,
+
+  // QR Codes
+  generateChargerQR,
+  regenerateChargerQR,
+  getChargerQR,
+
+  // Debug
+  adminRemoteStart,
+  adminRemoteStop,
+  getActiveSessionForCharger,
+  adminSetWalletBalance,
 };
 
+// ============================================
+// QR CODE HANDLERS
+// ============================================
+
+/**
+ * Generate QR code for a charger
+ * POST /api/admin/chargers/:chargerId/generate-qr
+ */
+export async function generateChargerQR(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const result = await qrCodeService.generateChargerQR(chargerId);
+    res.json({
+      success: true,
+      data: result,
+      message: "QR code generated successfully",
+    });
+  } catch (error) {
+    console.error("Generate QR error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Regenerate QR code for a charger
+ * POST /api/admin/chargers/:chargerId/regenerate-qr
+ */
+export async function regenerateChargerQR(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const result = await qrCodeService.regenerateChargerQR(chargerId);
+    res.json({
+      success: true,
+      data: result,
+      message: "QR code regenerated successfully",
+    });
+  } catch (error) {
+    console.error("Regenerate QR error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get QR code info for a charger
+ * GET /api/admin/chargers/:chargerId/qr
+ */
+export async function getChargerQR(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const result = await qrCodeService.getChargerQR(chargerId);
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Get QR error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+// ============================================
+// DEBUG HANDLERS
+// ============================================
+
+/**
+ * Admin Remote Start - start charging on a charger
+ * POST /api/admin/debug/chargers/:chargerId/start
+ */
+export async function adminRemoteStart(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const { connectorId } = req.body;
+
+    const result = await remoteStartTransaction(chargerId, {
+      idTag: "ADMIN_DEBUG",
+      connectorId: connectorId || 1,
+    });
+
+    res.json({
+      success: result.success,
+      data: result,
+      message: result.success
+        ? "Remote start sent successfully"
+        : `Remote start failed: ${result.error || result.status}`,
+    });
+  } catch (error) {
+    console.error("Admin remote start error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Admin Remote Stop - stop charging on a charger
+ * POST /api/admin/debug/chargers/:chargerId/stop
+ */
+export async function adminRemoteStop(req, res) {
+  try {
+    const { chargerId } = req.params;
+
+    // Find the active session on this charger
+    const activeSession = await prisma.chargingSession.findFirst({
+      where: {
+        chargerId,
+        endedAt: null,
+      },
+      orderBy: { startedAt: "desc" },
+    });
+
+    if (!activeSession) {
+      return res.status(404).json({
+        success: false,
+        error: "No active session found on this charger",
+      });
+    }
+
+    const result = await remoteStopTransaction(
+      chargerId,
+      activeSession.transactionId || activeSession.id
+    );
+
+    res.json({
+      success: result.success,
+      data: result,
+      message: result.success
+        ? "Remote stop sent successfully"
+        : `Remote stop failed: ${result.error || result.status}`,
+    });
+  } catch (error) {
+    console.error("Admin remote stop error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get active session for a charger (for debug live view)
+ * GET /api/admin/debug/chargers/:chargerId/session
+ * 
+ * Returns:
+ * - activeSession: from DB (chargingSession table)
+ * - liveStatus: from in-memory chargerStore (real-time meter data)
+ * - liveSession: from chargingSessionLive table (detailed meter readings)
+ * - recentSessions: last 10 completed sessions
+ */
+export async function getActiveSessionForCharger(req, res) {
+  try {
+    const { chargerId } = req.params;
+
+    // 1) Active session from DB
+    const activeSession = await prisma.chargingSession.findFirst({
+      where: {
+        chargerId,
+        endedAt: null,
+      },
+      include: {
+        charger: {
+          include: {
+            station: { select: { id: true, name: true, pricing: true } },
+            connectors: { orderBy: { connectorId: "asc" } },
+          },
+        },
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { startedAt: "desc" },
+    });
+
+    // 2) In-memory charger status (same source the Flutter app polls via /chargers/:id/status)
+    const memState = chargersStore.get(chargerId);
+    const online = isChargerOnline(chargerId);
+    const liveStatus = {
+      online,
+      status: memState?.status || null,
+      transactionId: memState?.transactionId ?? memState?.ocppTransactionId ?? null,
+      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh ?? null,
+      meterStart: memState?.meterStart ?? memState?.meterStartWh ?? null,
+      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
+        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
+        : null,
+      lastHeartbeat: memState?.lastHeartbeat || null,
+      lastMeterTime: memState?.lastMeterTime || null,
+    };
+
+    // 3) Live session from chargingSessionLive table (detailed meter readings: power, voltage, current, soc)
+    let liveSession = null;
+    if (activeSession) {
+      const liveMeter = await prisma.chargingSessionLive.findUnique({
+        where: { sessionId: activeSession.id },
+      });
+      if (liveMeter) {
+        liveSession = {
+          energyWh: liveMeter.energyWh,
+          powerW: liveMeter.powerW,
+          voltageV: liveMeter.voltageV,
+          currentA: liveMeter.currentA,
+          socPercent: liveMeter.socPercent,
+          temperatureC: liveMeter.temperatureC,
+          lastUpdated: liveMeter.lastMeterAt,
+        };
+      }
+    }
+
+    // 4) Recent completed sessions
+    const recentSessions = await prisma.chargingSession.findMany({
+      where: {
+        chargerId,
+        endedAt: { not: null },
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { startedAt: "desc" },
+      take: 10,
+    });
+
+    // 5) Get pricing for cost calculation
+    let energyRatePerKwh = 30; // default fallback
+    if (activeSession?.charger?.station?.pricing) {
+      const pricing = activeSession.charger.station.pricing;
+      if (pricing.perKwh) energyRatePerKwh = parseFloat(pricing.perKwh);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        activeSession,
+        liveStatus,
+        liveSession,
+        energyRatePerKwh,
+        recentSessions,
+      },
+    });
+  } catch (error) {
+    console.error("Get active session error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Admin Set Wallet Balance - directly set a user's wallet balance (debug tool)
+ * POST /api/admin/debug/wallet/set-balance
+ *
+ * Body:
+ * - userId: string (required) - Target user ID
+ * - newBalance: number (required) - New balance value (>= 0)
+ * - reason: string (optional) - Reason for adjustment
+ */
+export async function adminSetWalletBalance(req, res) {
+  try {
+    const { userId, newBalance, reason } = req.body;
+    const adminId = req.user?.id || "system";
+
+    // Validate inputs
+    if (!userId) {
+      return res.status(400).json({ success: false, error: "userId is required" });
+    }
+
+    const parsedBalance = parseFloat(newBalance);
+    if (isNaN(parsedBalance) || parsedBalance < 0) {
+      return res.status(400).json({ success: false, error: "newBalance must be a non-negative number" });
+    }
+
+    // Verify user exists
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    // Find or create wallet
+    let wallet = await prisma.wallet.findUnique({ where: { userId } });
+    const previousBalance = wallet ? parseFloat(wallet.balance) : 0;
+
+    if (!wallet) {
+      wallet = await prisma.wallet.create({
+        data: { userId, balance: 0, currency: "LKR" },
+      });
+    }
+
+    // Update wallet balance and create ledger entry in a transaction
+    const [updatedWallet, ledgerEntry] = await prisma.$transaction([
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: parsedBalance,
+          version: { increment: 1 },
+        },
+      }),
+      prisma.ledger.create({
+        data: {
+          userId,
+          type: "REFUND", // Using REFUND type for admin adjustments
+          amount: Math.abs(parsedBalance - previousBalance),
+          balanceAfter: parsedBalance,
+          referenceId: `ADMIN_DEBUG_${Date.now()}`,
+          referenceType: "ADMIN_ADJUSTMENT",
+          description: reason || `Admin debug: balance set from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`,
+          idempotencyKey: `admin_set_balance_${userId}_${uuidv4()}`,
+        },
+      }),
+    ]);
+
+    // Create audit log
+    await prisma.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "SET_WALLET_BALANCE",
+        targetType: "WALLET",
+        targetId: wallet.id,
+        previousValue: { balance: previousBalance.toFixed(2) },
+        newValue: { balance: parsedBalance.toFixed(2) },
+      },
+    });
+
+    console.log(`[DEBUG] Admin ${adminId} set wallet balance for user ${userId}: ${previousBalance} → ${parsedBalance}`);
+
+    res.json({
+      success: true,
+      data: {
+        wallet: updatedWallet,
+        previousBalance: previousBalance.toFixed(2),
+        newBalance: parsedBalance.toFixed(2),
+        ledgerEntry,
+        user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      },
+      message: `Wallet balance updated from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)} LKR`,
+    });
+  } catch (error) {
+    console.error("Admin set wallet balance error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}

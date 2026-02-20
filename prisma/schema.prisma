@@ -203,6 +203,13 @@ model Charger {
   // Registration
   isRegistered    Boolean   @default(false)
   registeredAt    DateTime?
+
+  // Access Codes
+  qrCode          String?   @unique
+  qrCodeImageUrl  String?   // Cloudinary URL of QR code image
+  encryptedCode   String?   @unique
+  backupCode      String?   @unique
+  codesGeneratedAt DateTime?
   
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

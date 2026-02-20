@@ -23,6 +23,12 @@ router.post("/admin/owners", requireAdmin, adminController.createOwner);
 // Get owner earnings
 router.get("/admin/owners/:ownerId/earnings", requireAdmin, adminController.getOwnerEarnings);
 
+// Get owner earnings by station
+router.get("/admin/owners/:ownerId/earnings-by-station", requireAdmin, adminController.getOwnerEarningsByStation);
+
+// Record payment to owner
+router.post("/admin/owners/:ownerId/payments", requireAdmin, adminController.recordOwnerPayment);
+
 // Get all users
 router.get("/admin/users", requireAdmin, adminController.getUsers);
 
@@ -45,8 +51,16 @@ router.post("/admin/chargers", requireAdmin, adminController.registerCharger);
 // Get all chargers
 router.get("/admin/chargers", requireAdmin, adminController.getChargers);
 
+// Get single charger by ID
+router.get("/admin/chargers/:chargerId", requireAdmin, adminController.getChargerById);
+
 // Assign charger to station
 router.post("/admin/chargers/:chargerId/assign", requireAdmin, adminController.assignChargerToStation);
+
+// QR Code management
+router.post("/admin/chargers/:chargerId/generate-qr", requireAdmin, adminController.generateChargerQR);
+router.post("/admin/chargers/:chargerId/regenerate-qr", requireAdmin, adminController.regenerateChargerQR);
+router.get("/admin/chargers/:chargerId/qr", requireAdmin, adminController.getChargerQR);
 
 // ============================================
 // STATION MANAGEMENT
@@ -137,5 +151,21 @@ router.post("/admin/settlements/:settlementId/fail", requireAdmin, adminControll
 
 // Get audit logs
 router.get("/admin/audit-logs", requireAdmin, adminController.getAuditLogs);
+
+// ============================================
+// DEBUG
+// ============================================
+
+// Remote start charging (admin debug)
+router.post("/admin/debug/chargers/:chargerId/start", requireAdmin, adminController.adminRemoteStart);
+
+// Remote stop charging (admin debug)
+router.post("/admin/debug/chargers/:chargerId/stop", requireAdmin, adminController.adminRemoteStop);
+
+// Get active session for charger (debug live view)
+router.get("/admin/debug/chargers/:chargerId/session", requireAdmin, adminController.getActiveSessionForCharger);
+
+// Set wallet balance (admin debug)
+router.post("/admin/debug/wallet/set-balance", requireAdmin, adminController.adminSetWalletBalance);
 
 export default router;
