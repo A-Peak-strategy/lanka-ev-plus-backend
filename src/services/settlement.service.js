@@ -29,10 +29,10 @@ const DEFAULT_COMMISSION_RATE = new Decimal("2.00");
  * @returns {object} { ownerEarning, commission }
  */
 export function calculateEarnings(totalCost, commissionRate = null) {
-  const rate = commissionRate !== null 
-    ? new Decimal(commissionRate) 
+  const rate = commissionRate !== null
+    ? new Decimal(commissionRate)
     : DEFAULT_COMMISSION_RATE;
-  
+
   const total = new Decimal(totalCost.toString());
   const commissionAmount = total.times(rate).dividedBy(100);
   const ownerEarning = total.minus(commissionAmount);
@@ -478,17 +478,30 @@ export async function getPendingSettlementsSummary() {
  * Get owner earnings summary
  * 
  * @param {string} ownerId
+ * @param {object} options - { startDate, endDate }
  * @returns {Promise<object>}
  */
-export async function getOwnerEarningsSummary(ownerId) {
-  // Get all-time earnings from sessions
-  const sessions = await prisma.chargingSession.aggregate({
-    where: {
-      charger: {
-        station: { ownerId },
-      },
-      endedAt: { not: null },
+export async function getOwnerEarningsSummary(ownerId, options = {}) {
+  const { startDate, endDate } = options;
+
+  // Build date filter for sessions
+  const sessionDateFilter = {};
+  if (startDate) sessionDateFilter.gte = new Date(startDate);
+  if (endDate) sessionDateFilter.lte = new Date(endDate);
+
+  const sessionWhere = {
+    charger: {
+      station: { ownerId },
     },
+    endedAt: { not: null },
+  };
+  if (startDate || endDate) {
+    sessionWhere.startedAt = sessionDateFilter;
+  }
+
+  // Get earnings from sessions (filtered by date)
+  const sessions = await prisma.chargingSession.aggregate({
+    where: sessionWhere,
     _sum: {
       ownerEarning: true,
       commission: true,
@@ -498,7 +511,7 @@ export async function getOwnerEarningsSummary(ownerId) {
     _count: { id: true },
   });
 
-  // Get pending payout amount
+  // Get pending payout amount (all-time, not date-filtered)
   const pendingSettlements = await prisma.settlement.findMany({
     where: {
       ownerId,
@@ -511,7 +524,7 @@ export async function getOwnerEarningsSummary(ownerId) {
     pendingPayout = pendingPayout.plus(new Decimal(s.netPayout.toString()));
   }
 
-  // Get total paid out
+  // Get total paid out (all-time)
   const paidSettlements = await prisma.settlement.findMany({
     where: {
       ownerId,
@@ -524,6 +537,20 @@ export async function getOwnerEarningsSummary(ownerId) {
     totalPaidOut = totalPaidOut.plus(new Decimal(s.netPayout.toString()));
   }
 
+  // All-time total earnings for balance calculation
+  const allTimeSessions = startDate || endDate
+    ? await prisma.chargingSession.aggregate({
+      where: {
+        charger: { station: { ownerId } },
+        endedAt: { not: null },
+      },
+      _sum: { ownerEarning: true },
+    })
+    : sessions;
+
+  const allTimeEarnings = new Decimal(allTimeSessions._sum.ownerEarning?.toString() || "0");
+  const remainingBalance = allTimeEarnings.minus(totalPaidOut).minus(pendingPayout);
+
   return {
     totalEarnings: sessions._sum.ownerEarning?.toString() || "0.00",
     totalCommissionPaid: sessions._sum.commission?.toString() || "0.00",
@@ -533,7 +560,153 @@ export async function getOwnerEarningsSummary(ownerId) {
     pendingPayout: pendingPayout.toFixed(2),
     totalPaidOut: totalPaidOut.toFixed(2),
     pendingSettlementsCount: pendingSettlements.length,
+    allTimeEarnings: allTimeEarnings.toFixed(2),
+    remainingBalance: remainingBalance.toFixed(2),
   };
+}
+
+/**
+ * Get owner earnings broken down by station
+ * 
+ * @param {string} ownerId
+ * @param {object} options - { startDate, endDate }
+ * @returns {Promise<object>}
+ */
+export async function getOwnerEarningsByStation(ownerId, options = {}) {
+  const { startDate, endDate } = options;
+
+  // Build date filter
+  const dateFilter = {};
+  if (startDate) dateFilter.gte = new Date(startDate);
+  if (endDate) dateFilter.lte = new Date(endDate);
+
+  // Get all stations for this owner
+  const stations = await prisma.station.findMany({
+    where: { ownerId },
+    include: {
+      chargers: {
+        select: { id: true },
+      },
+    },
+  });
+
+  const stationEarnings = [];
+
+  for (const station of stations) {
+    const chargerIds = station.chargers.map((c) => c.id);
+
+    if (chargerIds.length === 0) {
+      stationEarnings.push({
+        stationId: station.id,
+        stationName: station.name,
+        address: station.address,
+        chargerCount: 0,
+        totalSessions: 0,
+        totalEnergyKwh: "0.00",
+        grossRevenue: "0.00",
+        totalCommission: "0.00",
+        netEarnings: "0.00",
+        isActive: station.isActive,
+      });
+      continue;
+    }
+
+    const aggWhere = {
+      chargerId: { in: chargerIds },
+      endedAt: { not: null },
+    };
+    if (startDate || endDate) {
+      aggWhere.startedAt = dateFilter;
+    }
+
+    const agg = await prisma.chargingSession.aggregate({
+      where: aggWhere,
+      _sum: {
+        totalCost: true,
+        ownerEarning: true,
+        commission: true,
+        energyUsedWh: true,
+      },
+      _count: { id: true },
+    });
+
+    stationEarnings.push({
+      stationId: station.id,
+      stationName: station.name,
+      address: station.address,
+      chargerCount: chargerIds.length,
+      totalSessions: agg._count.id,
+      totalEnergyKwh: ((agg._sum.energyUsedWh || 0) / 1000).toFixed(2),
+      grossRevenue: agg._sum.totalCost?.toString() || "0.00",
+      totalCommission: agg._sum.commission?.toString() || "0.00",
+      netEarnings: agg._sum.ownerEarning?.toString() || "0.00",
+      isActive: station.isActive,
+    });
+  }
+
+  return stationEarnings;
+}
+
+/**
+ * Record a payment to an owner (admin action)
+ * Creates a settlement and immediately marks it as paid
+ * 
+ * @param {string} ownerId
+ * @param {object} paymentDetails
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function recordOwnerPayment(ownerId, paymentDetails, adminId) {
+  const { amount, paymentRef, paymentMethod, paymentNotes } = paymentDetails;
+
+  if (!amount || parseFloat(amount) <= 0) {
+    throw new Error("Invalid payment amount");
+  }
+
+  const owner = await prisma.user.findUnique({ where: { id: ownerId } });
+  if (!owner || owner.role !== "OWNER") {
+    throw new Error("Owner not found");
+  }
+
+  const paymentAmount = new Decimal(amount);
+  const now = new Date();
+
+  // Create settlement + mark paid in one transaction
+  const settlement = await prisma.$transaction(async (tx) => {
+    const created = await tx.settlement.create({
+      data: {
+        ownerId,
+        periodStart: now,
+        periodEnd: now,
+        totalEarnings: paymentAmount,
+        totalCommission: new Decimal(0),
+        netPayout: paymentAmount,
+        sessionCount: 0,
+        totalEnergyWh: 0,
+        status: "PAID",
+        paidAt: now,
+        paidByAdminId: adminId,
+        paymentRef: paymentRef || null,
+        paymentMethod: paymentMethod || "MANUAL",
+        paymentNotes: paymentNotes || "Manual payment by admin",
+      },
+    });
+
+    // Log admin action
+    await tx.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "RECORD_OWNER_PAYMENT",
+        targetType: "SETTLEMENT",
+        targetId: created.id,
+        newValue: JSON.stringify({ amount: amount.toString(), paymentRef, paymentMethod }),
+      },
+    });
+
+    return created;
+  });
+
+  return settlement;
 }
 
 export default {
@@ -547,5 +720,7 @@ export default {
   getSettlementById,
   getPendingSettlementsSummary,
   getOwnerEarningsSummary,
+  getOwnerEarningsByStation,
+  recordOwnerPayment,
 };
 

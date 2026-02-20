@@ -113,7 +113,7 @@ export async function getUsers(filters = {}) {
  */
 export async function updateUserStatus(userId, isActive, adminId) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  
+
   if (!user) {
     throw new Error("User not found");
   }
@@ -239,6 +239,32 @@ export async function getChargers(filters = {}) {
     take: limit,
     skip: offset,
   });
+}
+
+/**
+ * Get a single charger by ID with full details
+ * 
+ * @param {string} chargerId
+ * @returns {Promise<object>}
+ */
+export async function getChargerById(chargerId) {
+  const charger = await prisma.charger.findUnique({
+    where: { id: chargerId },
+    include: {
+      station: {
+        select: { id: true, name: true, owner: { select: { id: true, name: true } } },
+      },
+      connectors: {
+        orderBy: { connectorId: "asc" },
+      },
+      _count: {
+        select: { sessions: true },
+      },
+    },
+  });
+
+  if (!charger) throw new Error("Charger not found");
+  return charger;
 }
 
 /**
@@ -751,23 +777,24 @@ export default {
   createOwner,
   getUsers,
   updateUserStatus,
-  
+
   // Charger management
   registerCharger,
   getChargers,
+  getChargerById,
   assignChargerToStation,
-  
+
   // Station management
   createStation,
   getStations,
   assignStationToOwner,
-  
+
   // Pricing
   createPricing,
   updatePricing,
   getPricings,
   assignPricingToStation,
-  
+
   // Monitoring
   getSessions,
   getSessionStats,
