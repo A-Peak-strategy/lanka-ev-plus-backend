@@ -165,4 +165,7 @@ router.post("/admin/debug/chargers/:chargerId/stop", requireAdmin, adminControll
 // Get active session for charger (debug live view)
 router.get("/admin/debug/chargers/:chargerId/session", requireAdmin, adminController.getActiveSessionForCharger);
 
+// Set wallet balance (admin debug)
+router.post("/admin/debug/wallet/set-balance", requireAdmin, adminController.adminSetWalletBalance);
+
 export default router;

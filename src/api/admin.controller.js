@@ -6,6 +6,7 @@ import { chargersStore } from "../services/chargerStore.service.js";
 import { isChargerOnline } from "../ocpp/ocppServer.js";
 import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
 import { remoteStartTransaction } from "../ocpp/commands/remoteStartTransaction.js";
+import { v4 as uuidv4 } from "uuid";
 
 /**
  * Admin Controller
@@ -1024,6 +1025,7 @@ export default {
   adminRemoteStart,
   adminRemoteStop,
   getActiveSessionForCharger,
+  adminSetWalletBalance,
 };
 
 // ============================================
@@ -1259,5 +1261,99 @@ export async function getActiveSessionForCharger(req, res) {
   } catch (error) {
     console.error("Get active session error:", error);
     res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Admin Set Wallet Balance - directly set a user's wallet balance (debug tool)
+ * POST /api/admin/debug/wallet/set-balance
+ *
+ * Body:
+ * - userId: string (required) - Target user ID
+ * - newBalance: number (required) - New balance value (>= 0)
+ * - reason: string (optional) - Reason for adjustment
+ */
+export async function adminSetWalletBalance(req, res) {
+  try {
+    const { userId, newBalance, reason } = req.body;
+    const adminId = req.user?.id || "system";
+
+    // Validate inputs
+    if (!userId) {
+      return res.status(400).json({ success: false, error: "userId is required" });
+    }
+
+    const parsedBalance = parseFloat(newBalance);
+    if (isNaN(parsedBalance) || parsedBalance < 0) {
+      return res.status(400).json({ success: false, error: "newBalance must be a non-negative number" });
+    }
+
+    // Verify user exists
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    // Find or create wallet
+    let wallet = await prisma.wallet.findUnique({ where: { userId } });
+    const previousBalance = wallet ? parseFloat(wallet.balance) : 0;
+
+    if (!wallet) {
+      wallet = await prisma.wallet.create({
+        data: { userId, balance: 0, currency: "LKR" },
+      });
+    }
+
+    // Update wallet balance and create ledger entry in a transaction
+    const [updatedWallet, ledgerEntry] = await prisma.$transaction([
+      prisma.wallet.update({
+        where: { id: wallet.id },
+        data: {
+          balance: parsedBalance,
+          version: { increment: 1 },
+        },
+      }),
+      prisma.ledger.create({
+        data: {
+          userId,
+          type: "REFUND", // Using REFUND type for admin adjustments
+          amount: Math.abs(parsedBalance - previousBalance),
+          balanceAfter: parsedBalance,
+          referenceId: `ADMIN_DEBUG_${Date.now()}`,
+          referenceType: "ADMIN_ADJUSTMENT",
+          description: reason || `Admin debug: balance set from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`,
+          idempotencyKey: `admin_set_balance_${userId}_${uuidv4()}`,
+        },
+      }),
+    ]);
+
+    // Create audit log
+    await prisma.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "SET_WALLET_BALANCE",
+        targetType: "WALLET",
+        targetId: wallet.id,
+        previousValue: { balance: previousBalance.toFixed(2) },
+        newValue: { balance: parsedBalance.toFixed(2) },
+      },
+    });
+
+    console.log(`[DEBUG] Admin ${adminId} set wallet balance for user ${userId}: ${previousBalance} → ${parsedBalance}`);
+
+    res.json({
+      success: true,
+      data: {
+        wallet: updatedWallet,
+        previousBalance: previousBalance.toFixed(2),
+        newBalance: parsedBalance.toFixed(2),
+        ledgerEntry,
+        user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      },
+      message: `Wallet balance updated from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)} LKR`,
+    });
+  } catch (error) {
+    console.error("Admin set wallet balance error:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 }
