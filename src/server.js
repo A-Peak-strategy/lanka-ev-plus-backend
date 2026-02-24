@@ -8,6 +8,7 @@ import { initializeFirebase } from "./config/firebase.js";
 import { checkRedisAvailable } from "./config/redis.js";
 import { validateEnv } from "./config/env.js";
 import { startMobileSocket } from "./realtime/mobileSocket.js";
+import { initTransactionCounter } from "./utils/generateTransactionId.js";
 
 // Validate environment variables before anything else
 validateEnv();
@@ -30,9 +31,9 @@ startOcppServer(server);
 // Start background workers (only if Redis is available)
 async function startWorkers() {
   console.log("🔍 Checking Redis availability...");
-  
+
   const redisAvailable = await checkRedisAvailable();
-  
+
   if (!redisAvailable) {
     console.warn("⚠️ Redis is not available");
     console.warn("   Background workers (grace period, booking, settlement) are DISABLED");
@@ -57,7 +58,7 @@ async function startWorkers() {
     createGraceWorker();
     createBookingWorker();
     startSettlementWorker();
-    
+
     console.log("✅ All background workers started");
   } catch (error) {
     console.error("❌ Failed to start workers:", error.message);
@@ -76,6 +77,9 @@ server.listen(PORT, async () => {
   console.log(`   Health:   http://localhost:${PORT}/health`);
   console.log("═══════════════════════════════════════════════════");
   console.log("");
+
+  // Initialize transaction counter from DB (prevents duplicate IDs after restart)
+  await initTransactionCounter();
 
   // Start workers after server is listening
   await startWorkers();
