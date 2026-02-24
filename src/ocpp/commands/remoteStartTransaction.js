@@ -105,8 +105,14 @@ export async function remoteStartTransaction(chargerId, options) {
 export async function startChargingForUser(params) {
   const { chargerId, userId, connectorId = 1 } = params;
 
-  // Use userId as idTag (or look up user's RFID tag)
-  const idTag = userId;
+  // OCPP 1.6 CiString20Type: idTag max 20 characters
+  // User IDs (CUIDs) can be ~25 chars, so truncate for OCPP compliance.
+  // The full userId is stored in charger state as pendingUserId for billing.
+  const idTag = userId.substring(0, 20);
+
+  // Store the full userId in charger state so startTransaction handler can use it
+  const { updateChargerState } = await import("../../services/chargerStore.service.js");
+  await updateChargerState(chargerId, { pendingUserId: userId });
 
   return remoteStartTransaction(chargerId, {
     idTag,

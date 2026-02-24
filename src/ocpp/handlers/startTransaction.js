@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { AuthorizationStatus } from "../ocppConstants.js";
-import { updateChargerState } from "../../services/chargerStore.service.js";
+import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
 import { generateTransactionId } from "../../utils/generateTransactionId.js";
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
@@ -67,7 +67,9 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const pricing = await billingService.getPricingForCharger(chargerId);
 
   // Resolve user from idTag
-  const userId = await resolveUserFromIdTag(idTag);
+  // Prefer pendingUserId stored by startChargingForUser (full userId before OCPP truncation)
+  const chargerState = await getChargerState(chargerId);
+  const userId = chargerState?.pendingUserId || await resolveUserFromIdTag(idTag);
 
   // Acquire connector lock for this charging session
   const lockResult = await connectorLockService.markChargingActive(
@@ -114,6 +116,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     lastMeterValueWh: meterStart,
     idTag,
     userId,
+    pendingUserId: null,  // Clear after session created
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
