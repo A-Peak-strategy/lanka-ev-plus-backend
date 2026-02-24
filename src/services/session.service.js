@@ -109,7 +109,7 @@ export async function createSession(data) {
     },
   });
 
-  console.log(`✅ Session created: ${transactionId}`);
+  console.log(`✅ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>Session created: ${transactionId}`);
 
   return { session, duplicate: false };
 }

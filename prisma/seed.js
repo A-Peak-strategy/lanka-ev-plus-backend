@@ -105,6 +105,7 @@ async function main() {
       name: "System Administrator",
       role: "ADMIN",
       isActive: true,
+      ocppIdTag: `ADMIN-${adminFirebaseUid.slice(0, 8)}`,
     },
   });
 
@@ -169,6 +170,7 @@ async function main() {
         phone: phone,
         role: "OWNER",
         isActive: true,
+        ocppIdTag: `OWNER-${firebaseUid.slice(0, 8)}`,
       },
     });
 
@@ -242,6 +244,7 @@ async function main() {
         phone: phone,
         role: "CONSUMER",
         isActive: true,
+        ocppIdTag: `CONSUMER-${firebaseUid.slice(0, 8)}`,
         wallet: {
           create: {
             balance: balance,

@@ -23,7 +23,8 @@ const PAYHERE_CONFIG = {
     : "https://www.payhere.lk",
   returnUrl: process.env.PAYHERE_RETURN_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/return`,
   cancelUrl: process.env.PAYHERE_CANCEL_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/cancel`,
-  notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
+  // notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
+  notifyUrl: "https://a9cb-192-248-9-143.ngrok-free.app/api/payments/webhook",
 };
 
 /**

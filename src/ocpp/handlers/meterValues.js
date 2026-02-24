@@ -55,6 +55,12 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     return;
   }
 
+  if (!txId) {
+    console.warn(`[METER] ${chargerId}: No active transaction`);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
 
 
 
@@ -197,7 +203,7 @@ function extractMeterReadings(meterValue) {
 
   // Get the most recent meter value entry
   const lastEntry = meterValue[meterValue.length - 1];
-
+  
   if (!lastEntry || !lastEntry.sampledValue) {
     return readings;
   }

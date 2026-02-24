@@ -116,81 +116,6 @@ export const getCharger = async (req, res, next) => {
 };
 
 /**
- * Lookup charger by backup code or QR code data
- * 
- * GET /api/chargers/lookup?code=123456
- * 
- * Supports:
- *  - 6-digit backup code (e.g. "123456")
- *  - QR code URI (e.g. "evcharge://charger/CP001")
- */
-export const lookupChargerByCode = async (req, res, next) => {
-  try {
-    const { code } = req.query;
-
-    if (!code || typeof code !== "string" || code.trim().length === 0) {
-      throw new ValidationError("code query parameter is required");
-    }
-
-    const trimmedCode = code.trim();
-    let charger = null;
-
-    // Check if it's a QR code URI format: evcharge://charger/{chargerId}
-    const qrMatch = trimmedCode.match(/^evcharge:\/\/charger\/(.+)$/);
-
-    if (qrMatch) {
-      const chargerId = qrMatch[1];
-      charger = await prisma.charger.findUnique({
-        where: { id: chargerId },
-        include: {
-          station: true,
-          connectors: true,
-          sessions: {
-            take: 10,
-            orderBy: { startedAt: "desc" },
-          },
-        },
-      });
-    } else {
-      // Treat as backup code
-      charger = await prisma.charger.findUnique({
-        where: { backupCode: trimmedCode },
-        include: {
-          station: true,
-          connectors: true,
-          sessions: {
-            take: 10,
-            orderBy: { startedAt: "desc" },
-          },
-        },
-      });
-    }
-
-    if (!charger) {
-      throw new NotFoundError("Charger", trimmedCode);
-    }
-
-    const memState = chargersStore.get(charger.id);
-    const online = isChargerOnline(charger.id);
-    const metadata = getChargerMetadata(charger.id);
-
-    res.json({
-      success: true,
-      charger: {
-        ...charger,
-        status: memState?.status || charger.status,
-        connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
-        connectionMetadata: metadata,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
  * Get charger status (real-time)
  * 
  * GET /api/chargers/:chargerId/status
@@ -241,11 +166,12 @@ export const startCharging = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
     const { connectorId = 1 } = req.body;
+    // const userId = req.user?.id;
+    const userId = req.user?.id;
 
-    // Use authenticated user's ID from JWT token (set by verifyToken middleware)
-    const authenticatedUserId = req.user?.id;
-    if (!authenticatedUserId) {
-      throw new ValidationError("Authentication required to start charging");
+    if (!userId) {
+      console.warn(`[START] No userId provided for starting charger ${chargerId}. Defaulting to USER_API_REQUEST. This may affect auditing and billing.`);
+      throw new ValidationError("userId is required to start charging", "USER_ID_REQUIRED");
     }
 
     // Validate inputs
@@ -266,10 +192,12 @@ export const startCharging = async (req, res, next) => {
       );
     }
 
-    // Send RemoteStartTransaction with the authenticated user's ID as idTag
+    
+
+    // Send RemoteStartTransaction
     const result = await startChargingForUser({
       chargerId,
-      userId: authenticatedUserId,
+      userId: userId || "USER_API_REQUEST",
       connectorId: validConnectorId,
     });
 
