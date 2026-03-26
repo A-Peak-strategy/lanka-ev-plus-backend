@@ -21,18 +21,20 @@ export async function getChargerState(chargerId) {
   return dbState; // ✅ return DB if cache miss
 }
 
-// WRITE: DB first -> cache sync
+// WRITE: DB first -> cache MERGE (preserve non-DB fields like pendingUserId)
 export async function updateChargerState(chargerId, update) {
   const updated = await updateChargerStateAPI(chargerId, update);
-  chargersStore.set(chargerId, updated);
-  return updated;
+  const existing = chargersStore.get(chargerId) || {};
+  chargersStore.set(chargerId, { ...existing, ...updated });
+  return { ...existing, ...updated };
 }
 
-// WRITE meter: DB first -> cache sync
+// WRITE meter: DB first -> cache MERGE
 export async function updateMeterValue(chargerId, meterWh) {
   const updated = await updateMeterValueAPI(chargerId, meterWh);
-  chargersStore.set(chargerId, updated);
-  return updated;
+  const existing = chargersStore.get(chargerId) || {};
+  chargersStore.set(chargerId, { ...existing, ...updated });
+  return { ...existing, ...updated };
 }
 
 export async function getAllChargerStates() {

@@ -32,6 +32,7 @@ export async function createSession(data) {
     meterStart,
     timestamp,
     pricePerKwh,
+    presetAmount,
   } = data;
 
   // Idempotency check - prevent duplicate session creation
@@ -105,6 +106,7 @@ export async function createSession(data) {
       meterStartWh: meterStart || 0,
       startedAt: timestamp ? new Date(timestamp) : new Date(),
       pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
+      presetAmount: presetAmount ? new Decimal(presetAmount).toFixed(2) : null,
       lastBilledWh: meterStart || 0,
     },
   });

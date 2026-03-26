@@ -1101,6 +1101,20 @@ export async function adminRemoteStart(req, res) {
     const { chargerId } = req.params;
     const { connectorId } = req.body;
 
+    // Verify charger state to prevent duplicate start commands
+    const memState = chargersStore.get(chargerId);
+    if (memState?.status === "Charging" || memState?.status === "Preparing") {
+      return res.status(400).json({ success: false, error: "Charger is already busy" });
+    }
+
+    // Check database for active sessions
+    const activeSession = await prisma.chargingSession.findFirst({
+      where: { chargerId, endedAt: null },
+    });
+    if (activeSession) {
+      return res.status(400).json({ success: false, error: "Charger already has an active session" });
+    }
+
     const result = await remoteStartTransaction(chargerId, {
       idTag: "ADMIN_DEBUG",
       connectorId: connectorId || 1,

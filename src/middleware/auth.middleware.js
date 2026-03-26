@@ -34,26 +34,38 @@ export async function verifyToken(req, res, next) {
     });
 
     if (!user) {
-      // Create new user with CONSUMER role
-      user = await prisma.user.create({
-        data: {
-          firebaseUid: decodedToken.uid,
-          email: decodedToken.email,
-          phone: decodedToken.phone_number,
-          name: decodedToken.name,
-          role: "CONSUMER",
-          ocppIdTag: makeOcppIdTag(),
-        },
-      });
+      // Check if a user with this email already exists (e.g., from seed with different firebaseUid)
+      const existingByEmail = decodedToken.email
+        ? await prisma.user.findUnique({ where: { email: decodedToken.email } })
+        : null;
 
-      // Create wallet for new user
-      await prisma.wallet.create({
-        data: {
-          userId: user.id,
-          balance: 0,
-          currency: "LKR",
-        },
-      });
+      if (existingByEmail) {
+        // Link the existing user to this Firebase account
+        user = await prisma.user.update({
+          where: { id: existingByEmail.id },
+          data: { firebaseUid: decodedToken.uid },
+        });
+      } else {
+        // Create new user with CONSUMER role
+        user = await prisma.user.create({
+          data: {
+            firebaseUid: decodedToken.uid,
+            email: decodedToken.email,
+            phone: decodedToken.phone_number,
+            name: decodedToken.name,
+            role: "CONSUMER",
+            ocppIdTag: makeOcppIdTag(),
+          },
+        });
+      }
+
+      // Ensure wallet exists
+      const wallet = await prisma.wallet.findUnique({ where: { userId: user.id } });
+      if (!wallet) {
+        await prisma.wallet.create({
+          data: { userId: user.id, balance: 0, currency: "LKR" },
+        });
+      }
     }
 
     // Attach user to request

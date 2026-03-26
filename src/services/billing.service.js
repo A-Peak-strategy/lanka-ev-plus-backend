@@ -59,7 +59,8 @@ export async function getPricingForCharger(chargerId) {
         pricePerKwh: 50.0, // LKR 50 per kWh
         commissionRate: 2.0, // 2% commission per SRS
         gracePeriodSec: 60, // 60 seconds
-        lowBalanceThreshold: 50.0, // LKR 50
+        lowBalanceThreshold: 300.0, // LKR 300 - warning notification
+        graceStartThreshold: 100.0, // LKR 100 - grace period starts
         isDefault: true,
         isActive: true,
       },
@@ -92,7 +93,7 @@ export function calculateEnergyCost(energyWh, pricePerKwh) {
 export function calculateEarningsSplit(totalAmount, commissionRate) {
   const total = new Decimal(totalAmount);
   const rate = new Decimal(commissionRate).dividedBy(100);
-  
+
   const commission = total.times(rate);
   const ownerEarning = total.minus(commission);
 
@@ -147,8 +148,31 @@ export async function processMeterValuesBilling({
   }
 
   if (!session.userId) {
-    // No user associated - skip billing (e.g., test transactions)
-    return { success: true, skipped: true, reason: "No user associated" };
+    // No user associated - calculate energy and cost for tracking, but skip wallet/ledger
+    const lastBilledWh = session.lastBilledWh || session.meterStartWh || 0;
+    const incrementalWh = currentMeterWh - lastBilledWh;
+
+    if (incrementalWh <= 0) {
+      return { success: true, skipped: true, reason: "No new energy to bill" };
+    }
+
+    const pricing = await getPricingForCharger(chargerId);
+    const pricePerKwh = new Decimal(pricing.pricePerKwh.toString());
+    const incrementalCost = calculateEnergyCost(incrementalWh, pricePerKwh);
+
+    const totalEnergyUsed = currentMeterWh - (session.meterStartWh || 0);
+    const newTotalCost = new Decimal(session.totalCost?.toString() || "0").plus(incrementalCost);
+
+    await prisma.chargingSession.update({
+      where: { transactionId },
+      data: {
+        lastBilledWh: currentMeterWh,
+        energyUsedWh: totalEnergyUsed,
+        totalCost: newTotalCost.toFixed(2),
+      },
+    });
+
+    return { success: true, skipped: true, reason: "No user associated, stats updated" };
   }
 
   // Calculate incremental energy
@@ -185,11 +209,12 @@ export async function processMeterValuesBilling({
     transactionId,
     idempotencyKey,
     energyWh: incrementalWh,
+    chargerId,
+    pricePerKwh: pricePerKwh.toFixed(2),
   });
 
-  if (deductResult.duplicate) {
-    return { success: true, duplicate: true };
-  }
+  // Note: deductForCharging no longer checks for duplicates via ledger.
+  // Duplicate billing is prevented by the lastBilledWh check above.
 
   if (deductResult.insufficientFunds) {
     // Handle low balance
@@ -229,42 +254,82 @@ export async function processMeterValuesBilling({
     },
   });
 
-  // Record owner earning and commission in ledger (if station has owner)
-  if (session.charger?.station?.ownerId) {
-    const ownerId = session.charger.station.ownerId;
-    
-    await recordOwnerEarning({
-      ownerId,
-      amount: split.ownerEarning,
-      transactionId,
-      sessionId: session.id,
-      idempotencyKey: `${idempotencyKey}:owner`,
-    });
+  // NOTE: Owner earning and commission are NO LONGER recorded per MeterValues.
+  // They are created as consolidated entries at session end in finalizeSessionBilling().
 
-    await recordCommission({
-      ownerId,
-      amount: split.commission,
-      transactionId,
-      sessionId: session.id,
-      idempotencyKey: `${idempotencyKey}:commission`,
-    });
-  }
-
-  // Check for low balance warning
+  // Check balance thresholds
   const remainingBalance = new Decimal(deductResult.newBalance);
   const lowThreshold = new Decimal(pricing.lowBalanceThreshold.toString());
+  const graceThreshold = new Decimal((pricing.graceStartThreshold || 100).toString());
 
-  if (remainingBalance.lte(lowThreshold) && remainingBalance.gt(0)) {
+  // If balance drops below grace threshold (LKR 100) → start grace period immediately
+  if (remainingBalance.lte(graceThreshold) && remainingBalance.gt(0)) {
+    // Start grace period even though user still has some balance
+    if (!session.graceStartedAt) {
+      const gracePeriodSec = pricing.gracePeriodSec;
+
+      const graceResult = await startGracePeriod({
+        sessionId: session.id,
+        transactionId: session.transactionId,
+        userId: session.userId,
+        gracePeriodSec,
+        chargerId,
+      });
+
+      await prisma.chargingSession.update({
+        where: { id: session.id },
+        data: {
+          graceStartedAt: new Date(),
+          gracePeriodSec,
+        },
+      });
+
+      await notificationService.sendGracePeriodStarted({
+        userId: session.userId,
+        transactionId: session.transactionId,
+        gracePeriodSec,
+        requiredAmount: graceThreshold.toFixed(2),
+        currentBalance: remainingBalance.toFixed(2),
+      });
+
+      console.log(`[BILLING] Grace period started: balance LKR ${remainingBalance.toFixed(2)} <= threshold LKR ${graceThreshold.toFixed(2)}`);
+    }
+  } else if (remainingBalance.lte(lowThreshold) && remainingBalance.gt(graceThreshold)) {
+    // Balance between grace threshold and low threshold → send warning only
     await notificationService.sendLowBalanceWarning({
       userId: session.userId,
       balance: remainingBalance.toFixed(2),
       threshold: lowThreshold.toFixed(2),
       transactionId,
     });
+  } else if (remainingBalance.gt(lowThreshold)) {
+    // Balance above low threshold → cancel any existing grace period
+    await cancelGracePeriod(transactionId);
   }
 
-  // Cancel any existing grace period (user has balance)
-  await cancelGracePeriod(transactionId);
+  // Check if preset budget is consumed → auto-stop charger
+  if (session.presetAmount) {
+    const presetBudget = new Decimal(session.presetAmount.toString());
+    if (newTotalCost.gte(presetBudget)) {
+      console.log(`[BILLING] Preset budget reached: LKR ${newTotalCost.toFixed(2)} >= LKR ${presetBudget.toFixed(2)} → auto-stopping charger ${chargerId}`);
+
+      // Fire-and-forget: send RemoteStopTransaction
+      import("../ocpp/commands/remoteStopTransaction.js").then(({ stopChargingAtCharger }) => {
+        stopChargingAtCharger(chargerId, { reason: 'PRESET_BUDGET_REACHED' }).catch(err =>
+          console.error(`[BILLING] Auto-stop failed:`, err.message)
+        );
+      });
+
+      // Notify user
+      notificationService.sendChargingComplete({
+        userId: session.userId,
+        transactionId,
+        energyUsedWh: totalEnergyUsed,
+        totalCost: newTotalCost.toFixed(2),
+        reason: 'Preset budget reached',
+      }).catch(err => console.error(`[BILLING] Notification error:`, err.message));
+    }
+  }
 
   return {
     success: true,
@@ -346,6 +411,14 @@ async function handleInsufficientFunds({
 /**
  * Finalize billing for a completed session
  * 
+ * Creates consolidated ledger entries:
+ * 1. ONE CHARGE_DEBIT for the user (total session cost)
+ * 2. ONE OWNER_EARNING for the station owner
+ * 3. ONE COMMISSION deducted from admin wallet
+ * 
+ * Wallet balance was already deducted in real-time during charging.
+ * These entries are the audit trail.
+ * 
  * @param {string} transactionId
  * @returns {Promise<object>} Final billing summary
  */
@@ -353,9 +426,15 @@ export async function finalizeSessionBilling(transactionId) {
   const session = await prisma.chargingSession.findUnique({
     where: { transactionId },
     include: {
+      user: true,
       charger: {
         include: {
-          station: true,
+          station: {
+            include: {
+              pricing: true,
+              owner: true,
+            },
+          },
         },
       },
     },
@@ -377,12 +456,108 @@ export async function finalizeSessionBilling(transactionId) {
     },
   });
 
+  // --- Create consolidated ledger entries ---
+  const totalCost = new Decimal(session.totalCost.toString());
+  const ownerEarning = new Decimal(session.ownerEarning.toString());
+  const commission = new Decimal(session.commission.toString());
+
+  // Only create entries if there was actual cost
+  if (totalCost.gt(0) && session.userId) {
+    const chargerId = session.chargerId || 'Unknown';
+    const energyKwh = ((session.energyUsedWh || 0) / 1000).toFixed(2);
+    const pricing = session.charger?.station?.pricing;
+    const pricePerKwh = pricing ? pricing.pricePerKwh.toString() : '?';
+
+    // Calculate duration
+    const startTime = session.startedAt || session.createdAt;
+    const endTime = session.endedAt || new Date();
+    const durationMs = endTime.getTime() - startTime.getTime();
+    const durationMins = Math.round(durationMs / 60000);
+
+    // Get current wallet balance for balanceAfter
+    const wallet = await prisma.wallet.findUnique({ where: { userId: session.userId } });
+    const currentBalance = wallet ? new Decimal(wallet.balance.toString()) : new Decimal(0);
+
+    // 1. Consolidated CHARGE_DEBIT for user
+    const userIdempotencyKey = `session-final:${transactionId}:user`;
+    const existingUserEntry = await prisma.ledger.findUnique({ where: { idempotencyKey: userIdempotencyKey } });
+
+    if (!existingUserEntry) {
+      const description = `Charging Session · ${chargerId} · ${energyKwh} kWh @ LKR ${pricePerKwh}/kWh · ${durationMins} mins`;
+
+      await prisma.ledger.create({
+        data: {
+          userId: session.userId,
+          type: 'CHARGE_DEBIT',
+          amount: totalCost.toFixed(2),
+          balanceAfter: currentBalance.toFixed(2),
+          referenceId: String(transactionId),
+          referenceType: 'CHARGING_SESSION',
+          description,
+          idempotencyKey: userIdempotencyKey,
+          metadata: {
+            transactionId,
+            sessionId: session.id,
+            chargerId,
+            energyUsedWh: session.energyUsedWh,
+            energyKwh,
+            pricePerKwh,
+            durationMins,
+            totalCost: totalCost.toFixed(2),
+          },
+        },
+      });
+
+      console.log(`[BILLING] Created consolidated CHARGE_DEBIT: LKR ${totalCost.toFixed(2)} for session ${transactionId}`);
+    }
+
+    // 2. Consolidated OWNER_EARNING for station owner
+    const ownerId = session.charger?.station?.ownerId;
+    if (ownerId && ownerEarning.gt(0)) {
+      await recordOwnerEarning({
+        ownerId,
+        amount: ownerEarning.toFixed(2),
+        transactionId,
+        sessionId: session.id,
+        idempotencyKey: `session-final:${transactionId}:owner`,
+      });
+
+      console.log(`[BILLING] Created consolidated OWNER_EARNING: LKR ${ownerEarning.toFixed(2)} for owner ${ownerId}`);
+    }
+
+    // 3. Consolidated COMMISSION deducted from admin
+    if (ownerId && commission.gt(0)) {
+      await recordCommission({
+        ownerId,
+        amount: commission.toFixed(2),
+        transactionId,
+        sessionId: session.id,
+        idempotencyKey: `session-final:${transactionId}:commission`,
+      });
+
+      console.log(`[BILLING] Created consolidated COMMISSION: LKR ${commission.toFixed(2)}`);
+    }
+  }
+
+  // Unlock reserved funds from wallet if presetAmount was set
+  if (session.presetAmount && session.userId) {
+    try {
+      await walletService.unlockFunds(
+        session.userId,
+        session.presetAmount.toString()
+      );
+      console.log(`[BILLING] Unlocked LKR ${session.presetAmount} for user ${session.userId}`);
+    } catch (unlockErr) {
+      console.error(`[BILLING] Failed to unlock funds:`, unlockErr.message);
+    }
+  }
+
   return {
     transactionId,
     energyUsedWh: session.energyUsedWh,
-    totalCost: session.totalCost.toString(),
-    ownerEarning: session.ownerEarning.toString(),
-    commission: session.commission.toString(),
+    totalCost: totalCost.toFixed(2),
+    ownerEarning: ownerEarning.toFixed(2),
+    commission: commission.toFixed(2),
   };
 }
 

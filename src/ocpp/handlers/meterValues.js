@@ -5,6 +5,7 @@ import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
 import sessionLiveService from "../../services/sessionLive.service.js";
+import prisma from "../../config/db.js";
 
 /**
  * OCPP MeterValues Handler
@@ -33,7 +34,7 @@ import sessionLiveService from "../../services/sessionLive.service.js";
 export default async function meterValues(ws, messageId, chargerId, payload) {
   const { connectorId, transactionId, meterValue } = payload;
 
-  console.log(`[METER] ${chargerId}: Received meter values in Handler`, JSON.stringify(meterValue, null, 2));
+  console.log(`[METER] ${chargerId}: Received meter values (${meterValue.length} entries)`);
 
   // Validate payload
   if (!meterValue || meterValue.length === 0) {
@@ -49,29 +50,12 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   const txId = chargerState?.transactionId ?? chargerState?.ocppTransactionId ?? null; // ✅ fallback to ocppTransactionId
 
 
-  if (!sessionId) {
-    console.warn(`[METER] ${chargerId}: Missing ocppTransactionId(sessionId)`);
+  if (!sessionId || !txId) {
+    console.warn(`[METER] ${chargerId}: No active session (sessionId=${sessionId}, txId=${txId})`);
     sendCallResult(ws, messageId, {});
     return;
   }
 
-  if (!txId) {
-    console.warn(`[METER] ${chargerId}: No active transaction`);
-    sendCallResult(ws, messageId, {});
-    return;
-  }
-
-
-
-
-  console.log("=================================>>>>>>>>>>>>>>>>>>>>> chargerState in meterValues handler", JSON.stringify(chargerState, null, 2));
-
-
-  // if (!activeTransactionId) {
-  //   console.warn(`[METER] ${chargerId}: No active transaction`);
-  //   sendCallResult(ws, messageId, {});
-  //   return;
-  // }
 
   // Extract meter readings
   const readings = extractMeterReadings(meterValue);
@@ -85,16 +69,36 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   const energyWh = readings.energy;
   const meterTimestamp = new Date(meterValue[meterValue.length - 1].timestamp);
 
-  if (chargerState && chargerState.meterStartWh == null) {
-    await updateChargerState(chargerId, { meterStartWh: energyWh });
+  // Get the session's meterStartWh from the DB (source of truth) if chargerState doesn't have it
+  let sessionMeterStart = chargerState?.meterStartWh;
+
+  if (sessionMeterStart == null) {
+    // Fallback: read from ChargingSession table (set during StartTransaction)
+    try {
+      const dbSession = await prisma.chargingSession.findUnique({
+        where: { id: sessionId },
+        select: { meterStartWh: true },
+      });
+      sessionMeterStart = dbSession?.meterStartWh ?? energyWh;
+      // Also update chargerState so future calls don't need the DB lookup
+      await updateChargerState(chargerId, { meterStartWh: sessionMeterStart });
+    } catch (e) {
+      console.warn(`[METER] ${chargerId}: Could not fetch session meterStart, using current reading`);
+      sessionMeterStart = energyWh;
+    }
   }
 
+  // Compute energy used in this session (for live display + event)
+  const energyUsedWh = Math.max(0, energyWh - sessionMeterStart);
+  console.log(`[METER] ${chargerId}: meterStart=${sessionMeterStart}, current=${energyWh}, sessionEnergy=${energyUsedWh}Wh`);
+
+  // Single consolidated state update (fixes duplicate writes)
   await updateChargerState(chargerId, {
     lastMeterValueWh: energyWh,
+    lastMeterTime: new Date(),
   });
 
-  //? update the charger state with the latest meter value and time. This is used for real-time status API and to calculate energy used.
-  //? Update live session snapshot (USED BY MOBILE APP)
+  // Update live session snapshot (USED BY MOBILE APP) and session record
   try {
     await sessionLiveService.upsertLiveMeter({
       sessionId,
@@ -102,73 +106,45 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
       chargerId,
       connectorId,
       readings,
-      energyWh,
+      energyUsedWh,
       meterTimestamp,
     });
 
-    if (sessionId) {
-      await sessionService.updateSessionMeter(sessionId, energyWh);
-    } else {
-      console.warn(`[METER] ${chargerId}: Missing sessionId; cannot update ChargingSession`);
-    }
-    console.log(`[METER] ${chargerId}: Live session updated with ${energyWh}Wh`);
+    await sessionService.updateSessionMeter(sessionId, energyWh);
+    console.log(`[METER] ${chargerId}: ${energyWh}Wh (session: ${energyUsedWh}Wh)`);
   } catch (error) {
     console.error(`[METER] Live session update failed:`, error.message);
   }
 
 
-  // Update meterStart if this is the first reading
-  // if (chargerState && !chargerState.meterStart) {
-  //   chargerState.meterStart = energyWh;
-  //   updateChargerState(chargerId, { meterStart: energyWh });
-  // }
 
-  // Update last meter value
-  updateChargerState(chargerId, {
-    lastMeterValue: energyWh,
-    lastMeterTime: new Date(),
-  });
-
-  // Calculate energy used in this session
-  const energyUsed = chargerState?.meterStart
-    ? energyWh - chargerState.meterStart
-    : 0;
 
   // Process billing directly (NOT via event emitter to avoid double billing)
   // The session:meterUpdate event listener in ocppEvents.js also calls billing,
   // so we emit the event AFTER billing to share the result with other listeners.
   try {
-    if (!txId) {
-      console.warn(`[METER] ${chargerId}: No transactionId available; skipping billing`);
-    } else {
-      const billingResult = await billingService.processMeterValuesBilling({
-        chargerId,
-        transactionId: txId,
-        currentMeterWh: energyWh,
-      });
+    const billingResult = await billingService.processMeterValuesBilling({
+      chargerId,
+      transactionId: txId,
+      currentMeterWh: energyWh,
+    });
 
-      if (billingResult.success && !billingResult.skipped && !billingResult.duplicate) {
-        console.log(
-          `[METER] ${chargerId}: ${energyWh}Wh (+${billingResult.incrementalWh}Wh), ` +
-          `Billed: LKR ${billingResult.incrementalCost}, Balance: LKR ${billingResult.newBalance}`
-        );
-      } else if (billingResult.insufficientFunds) {
-        console.log(
-          `[METER] ${chargerId}: ${energyWh}Wh - INSUFFICIENT FUNDS ` +
-          `(grace: ${billingResult.graceActive ? 'active' : 'started'})`
-        );
-      }
+    if (billingResult.success && !billingResult.skipped && !billingResult.duplicate) {
+      console.log(
+        `[METER] ${chargerId}: ${energyWh}Wh (+${billingResult.incrementalWh}Wh), ` +
+        `Billed: LKR ${billingResult.incrementalCost}, Balance: LKR ${billingResult.newBalance}`
+      );
+    } else if (billingResult.insufficientFunds) {
+      console.log(
+        `[METER] ${chargerId}: ${energyWh}Wh - INSUFFICIENT FUNDS ` +
+        `(grace: ${billingResult.graceActive ? 'active' : 'started'})`
+      );
     }
   } catch (error) {
     console.error(`[METER] Billing error for ${chargerId}:`, error.message);
   }
 
-  // Update session in database
-  // try {
-  //   await sessionService.updateSessionMeter(txId, energyWh);
-  // } catch (error) {
-  //   console.error(`[METER] Session update error:`, error.message);
-  // }
+
 
   // Emit event AFTER billing (for other listeners like logging, notifications)
   // Note: Do NOT add billing logic in the event listener to avoid double billing
@@ -177,7 +153,7 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     connectorId,
     transactionId: txId,
     meterWh: energyWh,
-    energyUsedWh: energyUsed,
+    energyUsedWh,
     readings,
   });
 
@@ -211,7 +187,11 @@ function extractMeterReadings(meterValue) {
   for (const sample of lastEntry.sampledValue) {
     const measurand = sample.measurand || Measurand.ENERGY_ACTIVE_IMPORT_REGISTER;
     const value = parseFloat(sample.value);
-    const unit = sample.unit; // Per OCPP 1.6 Section 7.45: Wh, kWh, varh, kvarh, W, kW, VA, kVA, var, kvar, A, V, K, Celcius, Celsius, Fahrenheit, Percent
+    const unit = sample.unit;
+    const context = sample.context || "Sample.Periodic";
+
+    // Skip non-energy values from Transaction.Begin/End (chargers send zeros for power/voltage/current)
+    const isTransactionEdge = context === "Transaction.Begin" || context === "Transaction.End";
 
     if (isNaN(value)) continue;
 
@@ -229,7 +209,7 @@ function extractMeterReadings(meterValue) {
 
       case Measurand.POWER_ACTIVE_IMPORT:
       case "Power.Active.Import":
-        // Default unit: W. Some chargers may send kW
+        if (isTransactionEdge) break; // skip zero values from begin/end
         if (unit === "kW") {
           readings.power = value * 1000;
         } else {
@@ -239,11 +219,13 @@ function extractMeterReadings(meterValue) {
 
       case Measurand.CURRENT_IMPORT:
       case "Current.Import":
+        if (isTransactionEdge) break;
         readings.current = value;
         break;
 
       case Measurand.VOLTAGE:
       case "Voltage":
+        if (isTransactionEdge) break;
         readings.voltage = value;
         break;
 

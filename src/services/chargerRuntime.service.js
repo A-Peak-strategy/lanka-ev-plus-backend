@@ -7,6 +7,7 @@ const RUNTIME_ALLOWED = new Set([
     "errorCode",
     "lastStatusUpdate",
     "bookingId",
+    "transactionId",
     "internalTransactionId",
     "ocppTransactionId",
     "idTag",
@@ -63,7 +64,7 @@ export async function updateChargerStateAPI(chargerId, update) {
         status: update.status ? normStatus(update.status) : undefined,
         connectionStatus: update.connectionStatus
             ? normStatus(update.connectionStatus)
-            : undefined, 
+            : undefined,
     };
 
     // default connectorId if missing

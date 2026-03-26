@@ -195,8 +195,8 @@ export async function topUp({ userId, amount, paymentId, idempotencyKey }) {
         referenceType: "PAYMENT",
         description: `Payment received from user ${userId} via payment ${paymentId}`,
         idempotencyKey: adminIdempotencyKey,
-        metadata: { 
-          paymentId, 
+        metadata: {
+          paymentId,
           amount: amountDecimal.toFixed(2),
           sourceUserId: userId,
         },
@@ -228,6 +228,8 @@ export async function deductForCharging({
   transactionId,
   idempotencyKey,
   energyWh,
+  chargerId,
+  pricePerKwh,
 }) {
   const amountDecimal = new Decimal(amount);
 
@@ -235,20 +237,9 @@ export async function deductForCharging({
     return { success: true, skipped: true, reason: "Zero amount" };
   }
 
-  // Check for duplicate
-  const existingEntry = await prisma.ledger.findUnique({
-    where: { idempotencyKey },
-  });
-
-  if (existingEntry) {
-    const wallet = await getOrCreateWallet(userId);
-    return {
-      success: true,
-      duplicate: true,
-      wallet,
-      ledgerEntry: existingEntry,
-    };
-  }
+  // NOTE: No ledger entry during charging.
+  // Consolidated ledger entry is created at session end in finalizeSessionBilling().
+  // Duplicate billing is already prevented by lastBilledWh in billing.service.js.
 
   // Retry loop for optimistic locking
   const MAX_RETRIES = 3;
@@ -283,7 +274,7 @@ export async function deductForCharging({
 
         const newBalance = currentBalance.minus(amountDecimal);
 
-        // Update wallet with optimistic lock
+        // Update wallet with optimistic lock (no ledger entry — that comes at session end)
         const updatedWallet = await tx.wallet.update({
           where: {
             userId,
@@ -295,29 +286,9 @@ export async function deductForCharging({
           },
         });
 
-        // Create ledger entry
-        const ledgerEntry = await tx.ledger.create({
-          data: {
-            userId,
-            type: LedgerType.CHARGE_DEBIT,
-            amount: amountDecimal.toFixed(2),
-            balanceAfter: newBalance.toFixed(2),
-            referenceId: String(transactionId),
-            referenceType: "CHARGING_SESSION",
-            description: `Charging debit for ${energyWh}Wh`,
-            idempotencyKey,
-            metadata: {
-              transactionId,
-              energyWh,
-              amount: amountDecimal.toFixed(2),
-            },
-          },
-        });
-
         return {
           success: true,
           wallet: updatedWallet,
-          ledgerEntry,
           newBalance: newBalance.toFixed(2),
         };
       });
@@ -559,7 +530,7 @@ export async function releaseChargingAmount({
     }
 
     const userCurrentBalance = new Decimal(userWallet.balance.toString());
-    
+
     if (userCurrentBalance.lt(amountDecimal)) {
       throw new InsufficientBalanceError(amountDecimal, userCurrentBalance);
     }
@@ -717,6 +688,157 @@ export async function releaseChargingAmount({
   return { ...result, duplicate: false };
 }
 
+/**
+ * Lock funds in wallet for a charging session (reserve)
+ * 
+ * @param {string} userId
+ * @param {number|string} amount - Amount to lock
+ * @returns {Promise<object>} Updated wallet
+ */
+export async function lockFunds(userId, amount) {
+  const amountDecimal = new Decimal(amount);
+
+  if (amountDecimal.lte(0)) {
+    throw new ValidationError("Lock amount must be positive");
+  }
+
+  const MAX_RETRIES = 3;
+  let attempts = 0;
+
+  while (attempts < MAX_RETRIES) {
+    attempts++;
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const wallet = await tx.wallet.findUnique({ where: { userId } });
+
+        if (!wallet) {
+          throw new WalletNotFoundError(userId);
+        }
+
+        const balance = new Decimal(wallet.balance.toString());
+        const currentLocked = new Decimal(wallet.lockedBalance.toString());
+        const available = balance.minus(currentLocked);
+
+        if (available.lt(amountDecimal)) {
+          throw new InsufficientBalanceError(
+            available.toFixed(2),
+            amountDecimal.toFixed(2)
+          );
+        }
+
+        const newLocked = currentLocked.plus(amountDecimal);
+
+        const updatedWallet = await tx.wallet.update({
+          where: { userId, version: wallet.version },
+          data: {
+            lockedBalance: newLocked.toFixed(2),
+            version: { increment: 1 },
+          },
+        });
+
+        return {
+          success: true,
+          wallet: updatedWallet,
+          lockedAmount: amountDecimal.toFixed(2),
+          availableBalance: balance.minus(newLocked).toFixed(2),
+        };
+      });
+
+      return result;
+    } catch (error) {
+      if (
+        error.code === "P2025" ||
+        error.message?.includes("Record to update not found")
+      ) {
+        if (attempts >= MAX_RETRIES) throw new ConcurrentModificationError();
+        await new Promise((r) => setTimeout(r, Math.pow(2, attempts) * 10));
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new ConcurrentModificationError();
+}
+
+/**
+ * Unlock funds from wallet (release reservation)
+ * 
+ * @param {string} userId
+ * @param {number|string} amount - Amount to unlock
+ * @returns {Promise<object>} Updated wallet
+ */
+export async function unlockFunds(userId, amount) {
+  const amountDecimal = new Decimal(amount);
+
+  if (amountDecimal.lte(0)) {
+    return { success: true, skipped: true };
+  }
+
+  const MAX_RETRIES = 3;
+  let attempts = 0;
+
+  while (attempts < MAX_RETRIES) {
+    attempts++;
+
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        const wallet = await tx.wallet.findUnique({ where: { userId } });
+
+        if (!wallet) {
+          throw new WalletNotFoundError(userId);
+        }
+
+        const currentLocked = new Decimal(wallet.lockedBalance.toString());
+        // Don't go below 0
+        const newLocked = Decimal.max(currentLocked.minus(amountDecimal), new Decimal(0));
+
+        const updatedWallet = await tx.wallet.update({
+          where: { userId, version: wallet.version },
+          data: {
+            lockedBalance: newLocked.toFixed(2),
+            version: { increment: 1 },
+          },
+        });
+
+        return {
+          success: true,
+          wallet: updatedWallet,
+          unlockedAmount: amountDecimal.toFixed(2),
+        };
+      });
+
+      return result;
+    } catch (error) {
+      if (
+        error.code === "P2025" ||
+        error.message?.includes("Record to update not found")
+      ) {
+        if (attempts >= MAX_RETRIES) throw new ConcurrentModificationError();
+        await new Promise((r) => setTimeout(r, Math.pow(2, attempts) * 10));
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new ConcurrentModificationError();
+}
+
+/**
+ * Get available balance (balance - lockedBalance)
+ * 
+ * @param {string} userId
+ * @returns {Promise<string>} Available balance as string
+ */
+export async function getAvailableBalance(userId) {
+  const wallet = await getOrCreateWallet(userId);
+  const balance = new Decimal(wallet.balance.toString());
+  const locked = new Decimal(wallet.lockedBalance.toString());
+  return balance.minus(locked).toFixed(2);
+}
+
 export default {
   getOrCreateWallet,
   getBalance,
@@ -726,5 +848,8 @@ export default {
   processRefund,
   getTransactionHistory,
   releaseChargingAmount,
+  lockFunds,
+  unlockFunds,
+  getAvailableBalance,
 };
 

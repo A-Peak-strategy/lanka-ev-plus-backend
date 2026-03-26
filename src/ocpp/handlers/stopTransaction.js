@@ -159,7 +159,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     });
 
     console.log(`✅ [STOP] Transaction ${activeTransactionId} completed: ` +
-      `${((meterStop - (chargerState?.meterStart || 0)) / 1000).toFixed(2)} kWh, ` +
+      `${((finalSession?.energyUsedWh || 0) / 1000).toFixed(2)} kWh, ` +
       `LKR ${finalSession?.totalCost?.toString() || '0.00'}`
     );
 

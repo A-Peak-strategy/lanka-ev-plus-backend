@@ -67,9 +67,16 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const pricing = await billingService.getPricingForCharger(chargerId);
 
   // Resolve user from idTag
-  // Prefer pendingUserId stored by startChargingForUser (full userId before OCPP truncation)
-  const chargerState = await getChargerState(chargerId);
-  const userId = chargerState?.pendingUserId || await resolveUserFromIdTag(idTag);
+  // Prefer pendingUserId stored in the in-memory chargersStore by startChargingForUser.
+  // We read from the Map directly because getChargerState() may return DB data
+  // where pendingUserId was stripped by the RUNTIME_ALLOWED whitelist.
+  const { chargersStore } = await import("../../services/chargerStore.service.js");
+  const cachedState = chargersStore.get(chargerId);
+  const pendingUserId = cachedState?.pendingUserId;
+  const pendingPresetAmount = cachedState?.pendingPresetAmount;
+  const userId = pendingUserId || await resolveUserFromIdTag(idTag);
+
+  console.log(`[START] userId resolution: pendingUserId=${pendingUserId}, resolvedUserId=${userId}${pendingPresetAmount ? `, presetAmount: LKR ${pendingPresetAmount}` : ''}`);
 
   // Acquire connector lock for this charging session
   const lockResult = await connectorLockService.markChargingActive(
@@ -94,6 +101,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     meterStart,
     timestamp: startTime,
     pricePerKwh: pricing?.pricePerKwh,
+    presetAmount: pendingPresetAmount || null,
   });
 
 
@@ -117,6 +125,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     idTag,
     userId,
     pendingUserId: null,  // Clear after session created
+    pendingPresetAmount: null, // Clear after session created
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });

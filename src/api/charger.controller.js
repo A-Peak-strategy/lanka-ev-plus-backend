@@ -116,6 +116,85 @@ export const getCharger = async (req, res, next) => {
 };
 
 /**
+ * Lookup charger by backup code, QR code data, or charger ID
+ * 
+ * GET /api/chargers/lookup?code=123456
+ * 
+ * Supports:
+ *  - 6-digit backup code (e.g. "123456")
+ *  - QR code URI (e.g. "evcharge://charger/CP001")
+ *  - Charger ID directly (e.g. "CP001")
+ */
+export const lookupChargerByCode = async (req, res, next) => {
+  try {
+    const { code } = req.query;
+
+    if (!code || typeof code !== "string" || code.trim().length === 0) {
+      throw new ValidationError("code query parameter is required");
+    }
+
+    const trimmedCode = code.trim();
+    let charger = null;
+
+    const chargerInclude = {
+      station: true,
+      connectors: true,
+      sessions: {
+        take: 10,
+        orderBy: { startedAt: "desc" },
+      },
+    };
+
+    // Check if it's a QR code URI format: evcharge://charger/{chargerId}
+    const qrMatch = trimmedCode.match(/^evcharge:\/\/charger\/(.+)$/);
+
+    if (qrMatch) {
+      // QR code URI → extract charger ID
+      charger = await prisma.charger.findUnique({
+        where: { id: qrMatch[1] },
+        include: chargerInclude,
+      });
+    } else {
+      // Try backup code first
+      charger = await prisma.charger.findUnique({
+        where: { backupCode: trimmedCode },
+        include: chargerInclude,
+      });
+
+      // If not found by backup code, try direct charger ID
+      if (!charger) {
+        charger = await prisma.charger.findUnique({
+          where: { id: trimmedCode },
+          include: chargerInclude,
+        });
+      }
+    }
+
+    if (!charger) {
+      throw new NotFoundError("Charger", trimmedCode);
+    }
+
+    const memState = chargersStore.get(charger.id);
+    const online = isChargerOnline(charger.id);
+    const metadata = getChargerMetadata(charger.id);
+
+    res.json({
+      success: true,
+      charger: {
+        ...charger,
+        status: memState?.status || charger.status,
+        connectionState: online ? "CONNECTED" : "DISCONNECTED",
+        activeTransaction: memState?.transactionId || null,
+        currentMeterWh: memState?.lastMeterValue || null,
+        connectionMetadata: metadata,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Get charger status (real-time)
  * 
  * GET /api/chargers/:chargerId/status
@@ -165,8 +244,7 @@ export const getChargerStatus = (req, res, next) => {
 export const startCharging = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
-    const { connectorId = 1 } = req.body;
-    // const userId = req.user?.id;
+    const { connectorId = 1, presetAmount } = req.body;
     const userId = req.user?.id;
 
     if (!userId) {
@@ -192,13 +270,37 @@ export const startCharging = async (req, res, next) => {
       );
     }
 
-    
+    // Validate and lock wallet funds if presetAmount is provided
+    let lockedAmount = null;
+    if (presetAmount && presetAmount > 0) {
+      const walletService = await import("../services/wallet.service.js");
+
+      try {
+        const lockResult = await walletService.lockFunds(userId, presetAmount);
+        lockedAmount = presetAmount;
+        console.log(`[START] Locked LKR ${presetAmount} for user ${userId} on charger ${chargerId}`);
+      } catch (lockError) {
+        if (lockError.name === "InsufficientBalanceError" || lockError.message?.includes("Insufficient")) {
+          const available = await walletService.getAvailableBalance(userId);
+          return res.status(400).json({
+            success: false,
+            error: "Insufficient balance",
+            code: "INSUFFICIENT_BALANCE",
+            message: `Your wallet balance (LKR ${available}) is insufficient for the requested amount (LKR ${presetAmount}). Please top up.`,
+            availableBalance: available,
+            requestedAmount: presetAmount.toString(),
+          });
+        }
+        throw lockError;
+      }
+    }
 
     // Send RemoteStartTransaction
     const result = await startChargingForUser({
       chargerId,
       userId: userId || "USER_API_REQUEST",
       connectorId: validConnectorId,
+      presetAmount: lockedAmount,
     });
 
     if (result.success) {
@@ -207,8 +309,16 @@ export const startCharging = async (req, res, next) => {
         message: "Remote start command accepted",
         chargerId,
         connectorId: validConnectorId,
+        presetAmount: lockedAmount,
       });
     } else {
+      // If charger rejected, unlock the funds
+      if (lockedAmount) {
+        const walletService = await import("../services/wallet.service.js");
+        await walletService.unlockFunds(userId, lockedAmount).catch(err =>
+          console.error(`[START] Failed to unlock funds after rejection:`, err.message)
+        );
+      }
       throw new ConflictError(
         result.error || "Charger rejected start command",
         "CHARGER_REJECTED_START"
@@ -311,24 +421,28 @@ export const getChargerSessions = async (req, res, next) => {
 //? Get live session data for mobile app (used for real-time updates during charging)
 export async function getLiveSession(req, res) {
   const { transactionId } = req.params;
-  const txId = Number(transactionId);
+  const sessionId = Number(transactionId);
 
-  if (isNaN(txId)) {
+  if (isNaN(sessionId)) {
     return res.status(400).json({
       success: false,
       message: "Invalid transactionId format"
     });
   }
 
-  const sessionId = Number(req.params.transactionId);
-
-  if (isNaN(sessionId)) {
-    return res.status(400).json({ success: false });
-  }
-
-  const live = await prisma.chargingSessionLive.findUnique({
-    where: { sessionId },
-  });
+  // Fetch live meter data and session billing info in parallel
+  const [live, session] = await Promise.all([
+    prisma.chargingSessionLive.findUnique({
+      where: { sessionId },
+    }),
+    prisma.chargingSession.findUnique({
+      where: { id: sessionId },
+      select: {
+        totalCost: true,
+        pricePerKwh: true,
+      },
+    }),
+  ]);
 
   if (!live) {
     return res.status(404).json({
@@ -336,8 +450,6 @@ export async function getLiveSession(req, res) {
       message: "Live session not found"
     });
   }
-
-  console.log("[LIVE DATA ] : Retrieved LIve data and pass to FE  ", JSON.stringify(live, null, 2));
 
   res.json({
     success: true,
@@ -348,8 +460,9 @@ export async function getLiveSession(req, res) {
       currentA: live.currentA,
       socPercent: live.socPercent,
       temperatureC: live.temperatureC,
-      lastUpdated: live.lastMeterAt
+      lastUpdated: live.lastMeterAt,
+      totalCost: session?.totalCost?.toString() ?? "0.00",
+      pricePerKwh: session?.pricePerKwh?.toString() ?? null,
     }
   });
 }
-

@@ -103,16 +103,25 @@ export async function remoteStartTransaction(chargerId, options) {
  * @returns {Promise<object>}
  */
 export async function startChargingForUser(params) {
-  const { chargerId, userId, connectorId = 1 } = params;
+  const { chargerId, userId, connectorId = 1, presetAmount } = params;
 
   // OCPP 1.6 CiString20Type: idTag max 20 characters
   // User IDs (CUIDs) can be ~25 chars, so truncate for OCPP compliance.
-  // The full userId is stored in charger state as pendingUserId for billing.
   const idTag = userId.substring(0, 20);
 
-  // Store the full userId in charger state so startTransaction handler can use it
-  const { updateChargerState } = await import("../../services/chargerStore.service.js");
-  await updateChargerState(chargerId, { pendingUserId: userId });
+  // Store the full userId directly in the in-memory charger store.
+  // IMPORTANT: We use the Map directly because updateChargerState() writes
+  // to the DB via chargerRuntimeState which has a field whitelist that
+  // silently drops unknown fields like pendingUserId.
+  const { chargersStore } = await import("../../services/chargerStore.service.js");
+  const currentState = chargersStore.get(chargerId) || {};
+  chargersStore.set(chargerId, {
+    ...currentState,
+    pendingUserId: userId,
+    pendingPresetAmount: presetAmount || null,
+  });
+
+  console.log(`[CMD] Stored pendingUserId for ${chargerId}: ${userId}${presetAmount ? `, presetAmount: LKR ${presetAmount}` : ''}`);
 
   return remoteStartTransaction(chargerId, {
     idTag,
