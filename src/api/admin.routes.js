@@ -41,6 +41,9 @@ router.get("/admin/users/:userId/wallet", requireAdmin, adminController.getUserW
 // Update user status
 router.patch("/admin/users/:userId/status", requireAdmin, adminController.updateUserStatus);
 
+// Update user role
+router.patch("/admin/users/:userId/role", requireAdmin, adminController.updateUserRole);
+
 // ============================================
 // CHARGER MANAGEMENT
 // ============================================

@@ -4,6 +4,7 @@ import {
     updateProfile,
     getSessionHistory,
     getSessionStats,
+    deleteAccount,
 } from "./user.controller.js";
 import {
     verifyToken,
@@ -20,6 +21,9 @@ router.get("/me", getProfile);
 
 // PUT /api/user/me - Update user profile
 router.put("/me", updateProfile);
+
+// DELETE /api/user/me - Delete user account (soft-delete)
+router.delete("/me", deleteAccount);
 
 // GET /api/user/me/sessions - Get charging session history
 router.get("/me/sessions", getSessionHistory);
