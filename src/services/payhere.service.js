@@ -24,7 +24,7 @@ const PAYHERE_CONFIG = {
   returnUrl: process.env.PAYHERE_RETURN_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/return`,
   cancelUrl: process.env.PAYHERE_CANCEL_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/cancel`,
   // notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
-  notifyUrl: "https://hypercyanotic-tragic-jacquelyn.ngrok-free.dev/api/payments/webhook",
+  notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL}/api/payments/webhook`,
 };
 
 /**
