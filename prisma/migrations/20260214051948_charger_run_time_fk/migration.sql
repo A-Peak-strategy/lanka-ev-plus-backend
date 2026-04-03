@@ -5,10 +5,10 @@
 
 */
 -- DropIndex
-DROP INDEX `ChargingSessionLive_transactionId_key` ON `chargingsessionlive`;
+DROP INDEX `ChargingSessionLive_transactionId_key` ON `ChargingSessionLive`;
 
 -- AlterTable
-ALTER TABLE `chargerruntimestate` MODIFY `internalTransactionId` INTEGER NULL;
+ALTER TABLE `ChargerRuntimeState` MODIFY `internalTransactionId` INTEGER NULL;
 
 -- CreateIndex
 CREATE INDEX `ChargingSessionLive_transactionId_idx` ON `ChargingSessionLive`(`transactionId`);

@@ -1,5 +1,5 @@
 -- DropForeignKey
-ALTER TABLE `chargingsessionlive` DROP FOREIGN KEY `ChargingSessionLive_sessionId_fkey`;
+ALTER TABLE `ChargingSessionLive` DROP FOREIGN KEY `ChargingSessionLive_sessionId_fkey`;
 
 -- CreateTable
 CREATE TABLE `ChargerRuntimeState` (

@@ -5,7 +5,7 @@
 
 */
 -- AlterTable
-ALTER TABLE `user` ADD COLUMN `ocppIdTag` VARCHAR(20) NULL;
+ALTER TABLE `User` ADD COLUMN `ocppIdTag` VARCHAR(20) NULL;
 
 -- CreateIndex
 CREATE UNIQUE INDEX `User_ocppIdTag_key` ON `User`(`ocppIdTag`);

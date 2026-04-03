@@ -8,7 +8,7 @@
 
 */
 -- AlterTable
-ALTER TABLE `charger` ADD COLUMN `isRegistered` BOOLEAN NOT NULL DEFAULT false,
+ALTER TABLE `Charger` ADD COLUMN `isRegistered` BOOLEAN NOT NULL DEFAULT false,
     ADD COLUMN `registeredAt` DATETIME(3) NULL,
     ADD COLUMN `serialNumber` VARCHAR(191) NULL,
     ADD COLUMN `stationId` VARCHAR(191) NULL,
@@ -18,7 +18,7 @@ ALTER TABLE `charger` ADD COLUMN `isRegistered` BOOLEAN NOT NULL DEFAULT false,
     MODIFY `lastSeen` DATETIME(3) NULL;
 
 -- AlterTable
-ALTER TABLE `chargingsession` ADD COLUMN `commission` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+ALTER TABLE `ChargingSession` ADD COLUMN `commission` DECIMAL(12, 2) NOT NULL DEFAULT 0,
     ADD COLUMN `connectorId` VARCHAR(191) NULL,
     ADD COLUMN `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     ADD COLUMN `energyUsedWh` INTEGER NOT NULL DEFAULT 0,

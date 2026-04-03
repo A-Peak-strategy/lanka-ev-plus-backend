@@ -11,13 +11,13 @@
 
 */
 -- DropForeignKey
-ALTER TABLE `chargingsession` DROP FOREIGN KEY `ChargingSession_chargerId_fkey`;
+ALTER TABLE `ChargingSession` DROP FOREIGN KEY `ChargingSession_chargerId_fkey`;
 
 -- DropForeignKey
-ALTER TABLE `chargingsession` DROP FOREIGN KEY `ChargingSession_connectorId_fkey`;
+ALTER TABLE `ChargingSession` DROP FOREIGN KEY `ChargingSession_connectorId_fkey`;
 
 -- DropForeignKey
-ALTER TABLE `settlementitem` DROP FOREIGN KEY `SettlementItem_settlementId_fkey`;
+ALTER TABLE `SettlementItem` DROP FOREIGN KEY `SettlementItem_settlementId_fkey`;
 
 -- AlterTable
 ALTER TABLE `Charger` ADD COLUMN `backupCode` VARCHAR(191) NULL,
@@ -28,7 +28,7 @@ ALTER TABLE `Charger` ADD COLUMN `backupCode` VARCHAR(191) NULL,
 
 -- DropForeignKey (must drop FKs referencing chargingsession BEFORE dropping the table)
 ALTER TABLE `ChargingSessionLive` DROP FOREIGN KEY `ChargingSessionLive_sessionId_fkey`;
-ALTER TABLE `chargingsession` DROP FOREIGN KEY `chargingsession_userId_fkey`;
+ALTER TABLE `ChargingSession` DROP FOREIGN KEY `ChargingSession_userId_fkey`;
 
 -- DropForeignKey (must drop FKs referencing user BEFORE dropping the table)
 ALTER TABLE `Wallet` DROP FOREIGN KEY `Wallet_userId_fkey`;
@@ -38,16 +38,16 @@ ALTER TABLE `Booking` DROP FOREIGN KEY `Booking_userId_fkey`;
 ALTER TABLE `Payment` DROP FOREIGN KEY `Payment_userId_fkey`;
 
 -- DropTable
-DROP TABLE `chargingsession`;
+DROP TABLE `ChargingSession`;
 
 -- DropTable
-DROP TABLE `graceperiodjob`;
+DROP TABLE `GracePeriodJob`;
 
 -- DropTable
-DROP TABLE `settlementitem`;
+DROP TABLE `SettlementItem`;
 
 -- DropTable
-DROP TABLE `user`;
+DROP TABLE `User`;
 
 -- CreateTable
 CREATE TABLE `User` (

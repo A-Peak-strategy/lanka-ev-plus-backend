@@ -16,7 +16,7 @@ CREATE TABLE `Charger` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
-CREATE TABLE `ChargingSession` (
+CREATE TABLE `chargingSession` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `chargerId` VARCHAR(191) NOT NULL,
     `transactionId` INTEGER NOT NULL,
@@ -25,9 +25,9 @@ CREATE TABLE `ChargingSession` (
     `startedAt` DATETIME(3) NOT NULL,
     `endedAt` DATETIME(3) NULL,
 
-    INDEX `ChargingSession_chargerId_idx`(`chargerId`),
+    INDEX `chargingSession_chargerId_idx`(`chargerId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- AddForeignKey
-ALTER TABLE `ChargingSession` ADD CONSTRAINT `ChargingSession_chargerId_fkey` FOREIGN KEY (`chargerId`) REFERENCES `Charger`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE `chargingSession` ADD CONSTRAINT `chargingSession_chargerId_fkey` FOREIGN KEY (`chargerId`) REFERENCES `Charger`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;

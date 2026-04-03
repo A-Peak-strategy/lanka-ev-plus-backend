@@ -5,4 +5,4 @@
 
 */
 -- AlterTable
-ALTER TABLE `user` MODIFY `ocppIdTag` VARCHAR(191) NOT NULL;
+ALTER TABLE `User` MODIFY `ocppIdTag` VARCHAR(191) NOT NULL;

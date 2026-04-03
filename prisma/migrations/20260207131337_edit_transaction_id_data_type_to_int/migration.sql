@@ -7,13 +7,13 @@
 
 */
 -- AlterTable
-ALTER TABLE `chargingsession` MODIFY `transactionId` INTEGER NOT NULL;
+ALTER TABLE `ChargingSession` MODIFY `transactionId` INTEGER NOT NULL;
 
 -- AlterTable
-ALTER TABLE `graceperiodjob` MODIFY `transactionId` INTEGER NOT NULL;
+ALTER TABLE `GracePeriodJob` MODIFY `transactionId` INTEGER NOT NULL;
 
 -- AlterTable
-ALTER TABLE `settlementitem` MODIFY `transactionId` INTEGER NOT NULL;
+ALTER TABLE `SettlementItem` MODIFY `transactionId` INTEGER NOT NULL;
 
 -- CreateTable
 CREATE TABLE `ChargingSessionLive` (

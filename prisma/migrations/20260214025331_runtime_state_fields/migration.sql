@@ -1,5 +1,5 @@
 -- AlterTable
-ALTER TABLE `chargerruntimestate` ADD COLUMN `bookingId` VARCHAR(191) NULL,
+ALTER TABLE `ChargerRuntimeState` ADD COLUMN `bookingId` VARCHAR(191) NULL,
     ADD COLUMN `connectionStatus` ENUM('CONNECTED', 'DISCONNECTED') NULL,
     ADD COLUMN `errorCode` VARCHAR(191) NULL,
     ADD COLUMN `lastStatusUpdate` DATETIME(3) NULL;
