@@ -21,6 +21,10 @@ model User {
   role          UserRole  @default(CONSUMER)
   isActive      Boolean   @default(true)
   
+  // Soft-delete fields (retained for 30 days for admin/refund purposes)
+  deletedAt             DateTime?
+  walletBalanceAtDeletion Decimal?  @db.Decimal(12, 2)
+  
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -37,6 +41,7 @@ model User {
   @@index([firebaseUid])
   @@index([email])
   @@index([role])
+  @@index([deletedAt])
 }
 
 enum UserRole {

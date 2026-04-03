@@ -1,3 +1,4 @@
+import admin from "../config/firebase.js";
 import prisma from "../config/db.js";
 import sessionService from "../services/session.service.js";
 import { AuthenticationError } from "../errors/index.js";
@@ -218,9 +219,65 @@ export async function getSessionStats(req, res) {
     });
 }
 
+/**
+ * Delete authenticated user's account (soft-delete)
+ * DELETE /api/user/me
+ * 
+ * Soft-deletes the user:
+ * - Stores wallet balance at time of deletion (for refund purposes)
+ * - Sets isActive = false and deletedAt = now
+ * - Deletes the Firebase Auth account
+ * - DB record is retained for 30 days for admin visibility
+ */
+export async function deleteAccount(req, res) {
+    const user = req.user;
+
+    if (!user) {
+        throw new AuthenticationError("User authentication required");
+    }
+
+    try {
+        // 1. Get wallet balance before deletion
+        const wallet = await prisma.wallet.findUnique({
+            where: { userId: user.id },
+        });
+        const walletBalance = wallet ? wallet.balance : 0;
+
+        // 2. Soft-delete: mark user as inactive and store deletion info
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                isActive: false,
+                deletedAt: new Date(),
+                walletBalanceAtDeletion: walletBalance,
+            },
+        });
+
+        // 3. Delete Firebase Auth account
+        try {
+            await admin.auth().deleteUser(user.firebaseUid);
+        } catch (firebaseError) {
+            console.error("Failed to delete Firebase user:", firebaseError);
+            // Continue even if Firebase deletion fails — the user is already soft-deleted
+        }
+
+        res.json({
+            success: true,
+            message: "Account deleted successfully",
+        });
+    } catch (error) {
+        console.error("Delete account error:", error);
+        res.status(500).json({
+            success: false,
+            error: "Failed to delete account. Please try again.",
+        });
+    }
+}
+
 export default {
     getProfile,
     updateProfile,
     getSessionHistory,
     getSessionStats,
+    deleteAccount,
 };

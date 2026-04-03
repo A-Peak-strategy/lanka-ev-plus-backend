@@ -96,6 +96,51 @@ export async function updateUserStatus(req, res) {
   }
 }
 
+/**
+ * Update user role
+ * PATCH /api/admin/users/:userId/role
+ */
+export async function updateUserRole(req, res) {
+  try {
+    const { userId } = req.params;
+    const { role } = req.body;
+    const adminId = req.user?.id || "system";
+
+    const validRoles = ["CONSUMER", "OWNER", "ADMIN"];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid role. Must be one of: ${validRoles.join(", ")}`,
+      });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { role },
+    });
+
+    // Audit log
+    await prisma.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "UPDATE_USER_ROLE",
+        targetType: "USER",
+        targetId: userId,
+        newValue: { role },
+      },
+    });
+
+    res.json({
+      success: true,
+      data: user,
+      message: `User role updated to ${role}`,
+    });
+  } catch (error) {
+    console.error("Update user role error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
 // ============================================
 // CHARGER MANAGEMENT
 // ============================================
@@ -969,6 +1014,7 @@ export default {
   getUserById,
   getUserWallet,
   updateUserStatus,
+  updateUserRole,
 
   // Chargers
   registerCharger,
