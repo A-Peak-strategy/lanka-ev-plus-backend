@@ -13,6 +13,11 @@ import { v4 as uuidv4 } from "uuid";
  * - Idempotency handling
  */
 
+const notifyUrl =
+  process.env.NOTIFY_URL ||
+  (process.env.APP_URL && `${process.env.APP_URL}/api/payments/webhook`) ||
+  "https://app-api.lankaevplus.com/api/payments/webhook";
+
 // PayHere configuration
 const PAYHERE_CONFIG = {
   merchantId: process.env.PAYHERE_MERCHANT_ID,
@@ -24,7 +29,7 @@ const PAYHERE_CONFIG = {
   returnUrl: process.env.PAYHERE_RETURN_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/return`,
   cancelUrl: process.env.PAYHERE_CANCEL_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/cancel`,
   // notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
-  notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL}/api/payments/webhook` || "https://app-api.lankaevplus.com/api/payments/webhook",
+  notifyUrl: notifyUrl,
 };
 
 /**
