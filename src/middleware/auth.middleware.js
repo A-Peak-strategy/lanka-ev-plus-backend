@@ -34,9 +34,11 @@ export async function verifyToken(req, res, next) {
     });
 
     if (!user) {
+      const emailToLink = decodedToken.email || req.body?.email || req.headers['x-user-email'] || null;
+
       // Check if a user with this email already exists (e.g., from seed with different firebaseUid)
-      const existingByEmail = decodedToken.email
-        ? await prisma.user.findUnique({ where: { email: decodedToken.email } })
+      const existingByEmail = emailToLink
+        ? await prisma.user.findUnique({ where: { email: emailToLink } })
         : null;
 
       if (existingByEmail) {
@@ -50,9 +52,9 @@ export async function verifyToken(req, res, next) {
         user = await prisma.user.create({
           data: {
             firebaseUid: decodedToken.uid,
-            email: decodedToken.email,
-            phone: decodedToken.phone_number,
-            name: decodedToken.name,
+            email: emailToLink,
+            phone: decodedToken.phone_number || req.body?.phone || req.headers['x-user-phone'] || null,
+            name: decodedToken.name || req.body?.name || req.headers['x-user-name'] || null,
             role: "CONSUMER",
             ocppIdTag: makeOcppIdTag(),
           },
