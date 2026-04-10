@@ -6,6 +6,8 @@ import walletRoutes from "./api/wallet.routes.js";
 import bookingRoutes from "./api/booking.routes.js";
 import adminRoutes from "./api/admin.routes.js";
 import paymentRoutes from "./api/payment.routes.js";
+import connectorRoutes from "./api/connector.routes.js";
+import userRoutes from "./api/user.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
 
 const app = express();
@@ -15,10 +17,22 @@ const app = express();
 // ============================================
 
 // CORS configuration
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : ["http://localhost:3000", "http://localhost:3006"];
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || "*",
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, server-to-server)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
 }));
 
 // Request ID for tracing
@@ -38,7 +52,7 @@ app.use((req, res, next) => {
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (req.path !== "/health") {
-      console.log(`[API] ${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
+      // console.log(`[API] ${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
     }
   });
   next();
@@ -102,6 +116,8 @@ app.use("/api/chargers", chargerRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/connectors", connectorRoutes);
+app.use("/api/user", userRoutes);
 app.use("/api", adminRoutes);
 
 // ============================================

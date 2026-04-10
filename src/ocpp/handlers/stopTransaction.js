@@ -6,17 +6,21 @@ import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
 import notificationService from "../../services/notification.service.js";
 import connectorLockService from "../../services/connectorLock.service.js";
+import prisma from "../../config/db.js";
 
 /**
  * OCPP StopTransaction Handler
  * 
  * Sent by the Charge Point when a charging session ends.
  * 
+ * IMPORTANT: transactionId from charger is the integer we sent in StartTransaction.conf
+ * (which is session.id). We resolve it to the internal string transactionId for billing.
+ * 
  * Request: {
- *   idTag?: string,
- *   meterStop: number (Wh),
- *   timestamp: ISO8601,
- *   transactionId: number,
+ *   idTag?: CiString20Type,
+ *   meterStop: integer Wh (Required),
+ *   timestamp: ISO8601 (Required),
+ *   transactionId: integer (Required),
  *   reason?: StopReason,
  *   transactionData?: MeterValue[]
  * }
@@ -30,18 +34,31 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     idTag,
     meterStop,
     timestamp,
-    transactionId,
+    transactionId, // Integer from charger (= session.id)
     reason,
     transactionData,
   } = payload;
 
   const stopTime = timestamp ? new Date(timestamp) : new Date();
 
-  console.log(`[STOP] ${chargerId}: txId=${transactionId}, meter=${meterStop}Wh, reason=${reason || 'Normal'}`);
+  console.log(`[STOP] ${chargerId}: ocppTxId=${transactionId}, meter=${meterStop}Wh, reason=${reason || 'Normal'}`);
 
-  // Get charger state to find the transaction
-  const chargerState = getChargerState(chargerId);
-  const activeTransactionId = chargerState?.transactionId || transactionId?.toString();
+  // Resolve OCPP integer transactionId to internal string transactionId
+  // Priority: charger state (fastest) > DB lookup by session.id
+  const chargerState = await getChargerState(chargerId);
+  let activeTransactionId = chargerState?.transactionId;
+
+  if (!activeTransactionId && transactionId) {
+    // Charger state might have been lost (restart, etc.)
+    // Look up session by autoincrement ID (the integer we sent to charger)
+    const session = await prisma.chargingSession.findUnique({
+      where: { id: parseInt(transactionId) },
+    });
+    if (session) {
+      activeTransactionId = session.transactionId;
+      console.log(`[STOP] Resolved ocppTxId ${transactionId} → internal ${activeTransactionId}`);
+    }
+  }
 
   if (!activeTransactionId) {
     console.warn(`[STOP] No active transaction found for ${chargerId}`);
@@ -132,6 +149,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     updateChargerState(chargerId, {
       status: "Available",
       transactionId: null,
+      ocppTransactionId: null,
       meterStart: null,
       lastMeterValue: null,
       idTag: null,
@@ -141,7 +159,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     });
 
     console.log(`✅ [STOP] Transaction ${activeTransactionId} completed: ` +
-      `${((meterStop - (chargerState?.meterStart || 0)) / 1000).toFixed(2)} kWh, ` +
+      `${((finalSession?.energyUsedWh || 0) / 1000).toFixed(2)} kWh, ` +
       `LKR ${finalSession?.totalCost?.toString() || '0.00'}`
     );
 

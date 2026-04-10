@@ -7,34 +7,26 @@ import {
   getAllWallets,
   releaseChargingAmount,
 } from "./wallet.controller.js";
-// import { authMiddleware } from "../middleware/auth.middleware.js";
-// import { requireAdmin } from "../middleware/auth.middleware.js";
-
-import { requireActiveUser, verifyToken } from "../middleware/auth.middleware.js";
+import { requireActiveUser, requireAdmin, verifyToken } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
-
-// All wallet routes require authentication
-// router.use(authMiddleware);
 
 // GET /api/wallet - Get current wallet balance
 router.get("/", verifyToken, requireActiveUser, getWallet);
 
 // POST /api/wallet/topup - Top up wallet
-router.post("/topup",verifyToken, requireActiveUser, topUpWallet);
+router.post("/topup", verifyToken, requireActiveUser, topUpWallet);
 
-// POST /api/wallet/release-charging - Release charging amount
-router.post("/release-charging", releaseChargingAmount);
+// POST /api/wallet/release-charging - Release charging amount (internal use, requires auth)
+router.post("/release-charging", verifyToken, requireActiveUser, releaseChargingAmount);
 
 // GET /api/wallet/transactions - Get transaction history
-router.get("/transactions",verifyToken, requireActiveUser, getTransactions);
+router.get("/transactions", verifyToken, requireActiveUser, getTransactions);
 
 // GET /api/wallet/all - Get all wallets (admin only)
-// router.get("/all", requireAdmin, getAllWallets);
-router.get("/all", getAllWallets);
+router.get("/all", requireAdmin, getAllWallets);
 
-// GET /api/wallet/:userId - Get wallet by userId (must be last to avoid route conflicts)
-router.get("/:userId", getWalletByUserId);
+// GET /api/wallet/:userId - Get wallet by userId (admin only, must be last to avoid route conflicts)
+router.get("/:userId", requireAdmin, getWalletByUserId);
 
 export default router;
-

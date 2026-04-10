@@ -383,8 +383,8 @@ export async function releaseChargingAmount(req, res) {
       });
     }
 
-    // Generate idempotency key if not provided
-    const key = idempotencyKey || `release:${transactionId}:${uuidv4()}`;
+    // Generate deterministic idempotency key if not provided (retries must produce the same key)
+    const key = idempotencyKey || `release:${transactionId}:${userId}`;
 
     // Check if user exists
     const user = await prisma.user.findUnique({

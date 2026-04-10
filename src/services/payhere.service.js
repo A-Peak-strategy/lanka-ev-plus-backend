@@ -13,17 +13,23 @@ import { v4 as uuidv4 } from "uuid";
  * - Idempotency handling
  */
 
+const notifyUrl =
+  process.env.NOTIFY_URL ||
+  (process.env.APP_URL && `${process.env.APP_URL}/api/payments/webhook`) ||
+  "https://app-api.lankaevplus.com/api/payments/webhook";
+
 // PayHere configuration
 const PAYHERE_CONFIG = {
   merchantId: process.env.PAYHERE_MERCHANT_ID,
   merchantSecret: process.env.PAYHERE_MERCHANT_SECRET,
   sandbox: process.env.PAYHERE_SANDBOX === "true" || !process.env.PAYHERE_MERCHANT_ID,
-  baseUrl: process.env.PAYHERE_SANDBOX === "true" 
-    ? "https://sandbox.payhere.lk" 
+  baseUrl: process.env.PAYHERE_SANDBOX === "true"
+    ? "https://sandbox.payhere.lk"
     : "https://www.payhere.lk",
   returnUrl: process.env.PAYHERE_RETURN_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/return`,
   cancelUrl: process.env.PAYHERE_CANCEL_URL || `${process.env.APP_URL || "http://localhost:3000"}/api/payments/cancel`,
-  notifyUrl: process.env.PAYHERE_NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
+  // notifyUrl: process.env.NOTIFY_URL || `${process.env.APP_URL || "http://localhost:8000"}/api/payments/webhook`,
+  notifyUrl: notifyUrl,
 };
 
 /**
@@ -54,24 +60,24 @@ function generateHash(params) {
 
   // Build hash string
   let hashString = merchantId + orderId;
-  
+
   if (amount !== undefined) {
     hashString += parseFloat(amount).toFixed(2);
   }
-  
+
   if (currency) {
     hashString += currency;
   }
-  
+
   if (statusCode !== null) {
     hashString += statusCode;
   }
-  
+
   hashString += hashedSecret;
 
   // Generate final hash
   const hash = crypto.createHash("md5").update(hashString).digest("hex").toUpperCase();
-  
+
   return hash;
 }
 

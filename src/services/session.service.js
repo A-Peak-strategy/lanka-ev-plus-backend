@@ -32,6 +32,7 @@ export async function createSession(data) {
     meterStart,
     timestamp,
     pricePerKwh,
+    presetAmount,
   } = data;
 
   // Idempotency check - prevent duplicate session creation
@@ -70,10 +71,10 @@ export async function createSession(data) {
           `[SESSION] Active session ${activeSessionOnConnector.transactionId} exists on connector ${connectorId}`
         );
         // Return existing session instead of throwing - charger may have restarted
-        return { 
-          session: activeSessionOnConnector, 
-          duplicate: true, 
-          reason: "Connector has active session" 
+        return {
+          session: activeSessionOnConnector,
+          duplicate: true,
+          reason: "Connector has active session"
         };
       }
     }
@@ -105,11 +106,12 @@ export async function createSession(data) {
       meterStartWh: meterStart || 0,
       startedAt: timestamp ? new Date(timestamp) : new Date(),
       pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
+      presetAmount: presetAmount ? new Decimal(presetAmount).toFixed(2) : null,
       lastBilledWh: meterStart || 0,
     },
   });
 
-  console.log(`✅ Session created: ${transactionId}`);
+  console.log(`✅ >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>Session created: ${transactionId}`);
 
   return { session, duplicate: false };
 }
@@ -117,23 +119,23 @@ export async function createSession(data) {
 /**
  * Update session meter values
  * 
- * @param {string} transactionId
+ * @param {number} sessionId - ChargingSession.id (primary key)
  * @param {number} meterWh
  * @returns {Promise<object>} Updated session
  */
-export async function updateSessionMeter(transactionId, meterWh) {
+export async function updateSessionMeter(sessionId, meterWh) {
   const session = await prisma.chargingSession.findUnique({
-    where: { transactionId },
+    where: { id: sessionId },
   });
 
   if (!session) {
-    throw new SessionNotFoundError(transactionId);
+    throw new SessionNotFoundError(sessionId);
   }
 
   const energyUsed = meterWh - (session.meterStartWh || 0);
 
   const updated = await prisma.chargingSession.update({
-    where: { transactionId },
+    where: { id: sessionId },
     data: {
       energyUsedWh: Math.max(0, energyUsed),
     },

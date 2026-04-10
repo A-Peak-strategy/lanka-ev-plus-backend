@@ -50,6 +50,7 @@ export async function createOwner(data, adminId) {
       name,
       role: "OWNER",
       isActive: true,
+      ocppIdTag: makeOcppIdTag(),
     },
   });
 
@@ -72,6 +73,11 @@ export async function createOwner(data, adminId) {
   });
 
   return owner;
+}
+
+function makeOcppIdTag() {
+  // 12 chars, safe
+  return "O" + crypto.randomBytes(6).toString("hex").toUpperCase(); 
 }
 
 /**
@@ -113,7 +119,7 @@ export async function getUsers(filters = {}) {
  */
 export async function updateUserStatus(userId, isActive, adminId) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  
+
   if (!user) {
     throw new Error("User not found");
   }
@@ -239,6 +245,32 @@ export async function getChargers(filters = {}) {
     take: limit,
     skip: offset,
   });
+}
+
+/**
+ * Get a single charger by ID with full details
+ * 
+ * @param {string} chargerId
+ * @returns {Promise<object>}
+ */
+export async function getChargerById(chargerId) {
+  const charger = await prisma.charger.findUnique({
+    where: { id: chargerId },
+    include: {
+      station: {
+        select: { id: true, name: true, owner: { select: { id: true, name: true } } },
+      },
+      connectors: {
+        orderBy: { connectorId: "asc" },
+      },
+      _count: {
+        select: { sessions: true },
+      },
+    },
+  });
+
+  if (!charger) throw new Error("Charger not found");
+  return charger;
 }
 
 /**
@@ -408,7 +440,8 @@ export async function createPricing(data, adminId) {
     pricePerKwh,
     commissionRate = 2.00, // Default 2% per SRS
     gracePeriodSec = 60,
-    lowBalanceThreshold = 50.00,
+    lowBalanceThreshold = 300.00,
+    graceStartThreshold = 100.00,
     isDefault = false,
   } = data;
 
@@ -427,6 +460,7 @@ export async function createPricing(data, adminId) {
       commissionRate,
       gracePeriodSec,
       lowBalanceThreshold,
+      graceStartThreshold,
       isDefault,
       isActive: true,
     },
@@ -455,9 +489,18 @@ export async function updatePricing(pricingId, data, adminId) {
   const current = await prisma.pricing.findUnique({ where: { id: pricingId } });
   if (!current) throw new Error("Pricing not found");
 
+  // Whitelist allowed fields to prevent overwriting id, createdAt, etc.
+  const allowedFields = ["name", "pricePerKwh", "commissionRate", "gracePeriodSec", "lowBalanceThreshold", "graceStartThreshold", "isDefault", "isActive"];
+  const sanitizedData = {};
+  for (const key of allowedFields) {
+    if (data[key] !== undefined) {
+      sanitizedData[key] = data[key];
+    }
+  }
+
   const updated = await prisma.pricing.update({
     where: { id: pricingId },
-    data,
+    data: sanitizedData,
   });
 
   await logAdminAction({
@@ -742,23 +785,24 @@ export default {
   createOwner,
   getUsers,
   updateUserStatus,
-  
+
   // Charger management
   registerCharger,
   getChargers,
+  getChargerById,
   assignChargerToStation,
-  
+
   // Station management
   createStation,
   getStations,
   assignStationToOwner,
-  
+
   // Pricing
   createPricing,
   updatePricing,
   getPricings,
   assignPricingToStation,
-  
+
   // Monitoring
   getSessions,
   getSessionStats,

@@ -186,7 +186,7 @@ export async function createCompensatingEntry({
         type: compensatingType,
         amount: originalAmount.toFixed(2),
         balanceAfter: newBalance.toFixed(2),
-        referenceId: originalEntryId,
+        referenceId: String(originalEntryId),
         referenceType: "ADJUSTMENT",
         description: `Compensation for ${originalEntry.type}: ${reason}`,
         idempotencyKey,
@@ -270,7 +270,7 @@ export async function recordOwnerEarning({
         type: LedgerType.OWNER_EARNING,
         amount: earningAmount.toFixed(2),
         balanceAfter: newBalance.toFixed(2),
-        referenceId: transactionId,
+        referenceId: String(transactionId),
         referenceType: ReferenceType.CHARGING_SESSION,
         description: `Earning from session ${sessionId}`,
         idempotencyKey,
@@ -370,7 +370,7 @@ export async function recordCommission({
         type: LedgerType.COMMISSION,
         amount: commissionAmount.toFixed(2),
         balanceAfter: newBalance.toFixed(2),
-        referenceId: transactionId,
+        referenceId: String(transactionId),
         referenceType: ReferenceType.CHARGING_SESSION,
         description: `Platform commission for session ${sessionId} (owner: ${ownerId})`,
         idempotencyKey,
@@ -483,7 +483,7 @@ export function generateIdempotencyKey(prefix, ...parts) {
 
 // Helper functions
 function isDebitType(type) {
-  return [LedgerType.CHARGE_DEBIT, LedgerType.COMMISSION].includes(type);
+  return [LedgerType.CHARGE_DEBIT, LedgerType.COMMISSION, LedgerType.SETTLEMENT_PAYOUT].includes(type);
 }
 
 function getCompensatingType(type) {

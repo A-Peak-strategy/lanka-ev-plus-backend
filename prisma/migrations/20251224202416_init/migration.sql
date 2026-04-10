@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE `chargingsession` MODIFY `meterStartWh` INTEGER NULL;
+ALTER TABLE `chargingSession` MODIFY `meterStartWh` INTEGER NULL;

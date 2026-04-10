@@ -5,10 +5,10 @@
 
 */
 -- DropForeignKey
-ALTER TABLE `chargingsession` DROP FOREIGN KEY `ChargingSession_chargerId_fkey`;
+ALTER TABLE `chargingSession` DROP FOREIGN KEY `chargingSession_chargerId_fkey`;
 
 -- DropTable
-DROP TABLE `chargingsession`;
+DROP TABLE `chargingSession`;
 
 -- CreateTable
 CREATE TABLE `ChargingSession` (

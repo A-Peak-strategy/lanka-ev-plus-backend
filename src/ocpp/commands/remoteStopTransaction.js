@@ -21,15 +21,16 @@ import prisma from "../../config/db.js";
 /**
  * Send RemoteStopTransaction to a charger
  * 
+ * IMPORTANT: Per OCPP 1.6 Section 6.35, transactionId MUST be integer.
+ * This function accepts the internal string transactionId OR the OCPP integer ID,
+ * and resolves the correct integer to send to the charger.
+ * 
  * @param {string} chargerId - Target charger ID
- * @param {string|number} transactionId - Transaction to stop
+ * @param {string|number} transactionIdOrInternal - OCPP integer txId or internal string txId
  * @returns {Promise<object>} Command result
  */
-export async function remoteStopTransaction(chargerId, transactionId) {
-
-
-
-  if (!transactionId) {
+export async function remoteStopTransaction(chargerId, transactionIdOrInternal) {
+  if (!transactionIdOrInternal) {
     throw new Error("transactionId is required for RemoteStopTransaction");
   }
 
@@ -44,34 +45,59 @@ export async function remoteStopTransaction(chargerId, transactionId) {
 
   const ws = getChargerConnection(chargerId);
 
-  // OCPP 1.6 expects transactionId as integer
-  // Some chargers accept string, others require integer
-  const txId = typeof transactionId === "string" 
-    ? parseInt(transactionId) || transactionId 
-    : transactionId;
+  // Resolve the OCPP integer transactionId
+  // 1. Check charger state for ocppTransactionId
+  // 2. If input is already integer, use directly
+  // 3. If input is string (internal ID), look up session.id from DB
+  let ocppTxId;
+  const chargerState = await getChargerState(chargerId);
+
+  if (chargerState?.ocppTransactionId) {
+    // Best case: we have the integer ID in memory
+    ocppTxId = chargerState.ocppTransactionId;
+  } else if (typeof transactionIdOrInternal === "number") {
+    ocppTxId = transactionIdOrInternal;
+  } else {
+    // String input - look up the session to get the integer ID
+    const session = await prisma.chargingSession.findUnique({
+      where: { transactionId: transactionIdOrInternal },
+      select: { id: true },
+    });
+    if (session) {
+      ocppTxId = session.id;
+    } else {
+      // Last resort: try to parse as integer
+      ocppTxId = parseInt(transactionIdOrInternal);
+      if (isNaN(ocppTxId)) {
+        return {
+          success: false,
+          status: "Error",
+          error: `Cannot resolve OCPP transactionId from: ${transactionIdOrInternal}`,
+        };
+      }
+    }
+  }
 
   try {
-    console.log(`[CMD] RemoteStopTransaction → ${chargerId} (txId: ${transactionId})`);
+    console.log(`[CMD] RemoteStopTransaction → ${chargerId} (ocppTxId: ${ocppTxId})`);
 
     const response = await sendCall(
       ws,
       chargerId,
       CStoCPAction.REMOTE_STOP_TRANSACTION,
-      { transactionId: txId },
+      { transactionId: ocppTxId },
       { timeout: 30000 }
     );
 
-    console.log("Response from the charger : >>>>>>>>>>>>>>>>>>>>>>>>>", response);
-
     const accepted = response.status === RemoteStartStopStatus.ACCEPTED;
-
     console.log(`[CMD] RemoteStopTransaction ← ${chargerId}: ${response.status}`);
 
     return {
       success: accepted,
       status: response.status,
       chargerId,
-      transactionId,
+      transactionId: transactionIdOrInternal,
+      ocppTransactionId: ocppTxId,
     };
   } catch (error) {
     console.error(`[CMD] RemoteStopTransaction error for ${chargerId}:`, error.message);
@@ -93,9 +119,9 @@ export async function remoteStopTransaction(chargerId, transactionId) {
  */
 export async function stopChargingAtCharger(chargerId) {
   // Get active transaction from charger state
-  const chargerState = getChargerState(chargerId);
+  const chargerState = await getChargerState(chargerId);
   
-  if (!chargerState?.transactionId) {
+  if (!chargerState?.ocppTransactionId && !chargerState?.transactionId) {
     // Try to find from database
     const session = await prisma.chargingSession.findFirst({
       where: {
@@ -113,10 +139,12 @@ export async function stopChargingAtCharger(chargerId) {
       };
     }
 
-    return remoteStopTransaction(chargerId, session.transactionId);
+    // session.id is the OCPP integer transactionId
+    return remoteStopTransaction(chargerId, session.id);
   }
 
-  return remoteStopTransaction(chargerId, chargerState.transactionId);
+  // Prefer ocppTransactionId (integer), fall back to internal string
+  return remoteStopTransaction(chargerId, chargerState.ocppTransactionId || chargerState.transactionId);
 }
 
 /**
@@ -132,16 +160,15 @@ export async function forceStopForGrace(chargerId, transactionId, reason = "Grac
 
   const result = await remoteStopTransaction(chargerId, transactionId);
 
-  // Update session with stop reason if successful
-  if (result.success) {
-    try {
-      await prisma.chargingSession.updateMany({
-        where: { transactionId },
-        data: { stopReason: "GRACE_EXPIRED" },
-      });
-    } catch (error) {
-      console.error("Error updating session stop reason:", error);
-    }
+  // Update session with stop reason regardless of charger response
+  // (if charger is offline, the session still needs to be marked)
+  try {
+    await prisma.chargingSession.updateMany({
+      where: { transactionId },
+      data: { stopReason: "GRACE_EXPIRED" },
+    });
+  } catch (error) {
+    console.error("Error updating session stop reason:", error);
   }
 
   return result;

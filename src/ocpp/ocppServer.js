@@ -37,8 +37,18 @@ export const startOcppServer = (server) => {
 
   const wss = new WebSocketServer({
     server,
-    path: undefined, // Accept connections on any path
     verifyClient: verifyChargerConnection,
+    // OCPP 1.6-J requires subprotocol negotiation
+    handleProtocols: (protocols, req) => {
+      // Real chargers send "ocpp1.6" (or "ocpp1.6j") as subprotocol
+      if (protocols.has("ocpp1.6")) return "ocpp1.6";
+      if (protocols.has("ocpp1.6j")) return "ocpp1.6j";
+      // Accept even if no subprotocol is specified (for testing tools)
+      if (protocols.size === 0) return false;
+      // If charger sends unknown protocols, still accept but log warning
+      console.warn(`⚠️ Unknown OCPP subprotocols: ${[...protocols].join(", ")}`);
+      return [...protocols][0]; // Accept the first offered protocol
+    },
   });
 
   wss.on("connection", async (ws, req) => {
@@ -120,26 +130,53 @@ export const startOcppServer = (server) => {
  * @param {object} info - Connection info
  * @param {function} callback - Verification callback
  */
-function verifyChargerConnection(info, callback) {
-  const chargerId = extractChargerId(info.req.url);
+// function verifyChargerConnection(info, callback) {
+//     const url = info.req.url;
 
+//   // 🔥 ONLY allow /ocpp/*
+//   if (!url.startsWith("/ocpp/")) {
+//     callback(false, 404, "Not an OCPP endpoint");
+//     return;
+//   }
+
+//   const chargerId = extractChargerId(url);
+//   if (!chargerId) {
+//     callback(false, 400, "Missing charger ID");
+//     return;
+//   }
+
+//   // Subprotocol negotiation is handled by handleProtocols option
+//   // Log the charger's offered protocols for debugging
+//   const protocols = info.req.headers["sec-websocket-protocol"];
+//   if (protocols) {
+//     console.log(`🔌 Charger ${chargerId} offers protocols: ${protocols}`);
+//   } else {
+//     console.warn(`⚠️ Charger ${chargerId} did not offer any OCPP subprotocol`);
+//   }
+
+//   // Accept connection - charger identity is validated on BootNotification
+//   callback(true);
+// }
+function verifyChargerConnection(info, callback) {
+  const url = info.req.url;   
+
+  // Allow only /ocpp/{chargerId}
+  if (!url || !url.startsWith("/ocpp/")) {
+    callback(false, 404, "Not an OCPP endpoint");
+    return;
+  }
+
+  const chargerId = extractChargerId(url);
   if (!chargerId) {
     callback(false, 400, "Missing charger ID");
     return;
   }
 
-  // Check OCPP subprotocol
-  const protocols = info.req.headers["sec-websocket-protocol"];
-  if (protocols && !protocols.includes("ocpp1.6")) {
-    console.warn(`⚠️ Charger ${chargerId} using non-standard protocol: ${protocols}`);
-    // Still accept - many chargers don't send correct subprotocol
-  }
-
-  // TODO: Add charger registration validation
-  // For now, accept all connections (charger will be registered on BootNotification)
+  console.log(`🔌 Incoming WS handshake for charger: ${chargerId}`);
 
   callback(true);
 }
+
 
 /**
  * Extract charger ID from URL path
@@ -148,20 +185,17 @@ function verifyChargerConnection(info, callback) {
  * @returns {string} Charger ID
  */
 function extractChargerId(url) {
-  if (!url) return null;
-
-  // Remove query string
   const path = url.split("?")[0];
-
-  // Extract last path segment as charger ID
   const segments = path.split("/").filter(Boolean);
 
-  if (segments.length === 0) return null;
+  // Expect: /ocpp/{CHARGER_ID}
+  if (segments.length !== 2 || segments[0] !== "ocpp") {
+    return null;
+  }
 
-  // If path is /ocpp/CHARGER_ID, use last segment
-  // If path is /CHARGER_ID, use that
-  return segments[segments.length - 1] || null;
+  return segments[1];
 }
+
 
 /**
  * Route incoming OCPP message to appropriate handler
@@ -240,7 +274,7 @@ async function routeOcppMessage(ws, chargerId, message) {
       messageType,
       action: message[2],
     });
-    
+
     if (messageType === MessageType.CALL) {
       // Don't expose internal error details
       sendCallError(

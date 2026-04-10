@@ -42,6 +42,14 @@ const handlers = {
  * @param {object} payload - Message payload
  */
 export async function handleOcppMessage(ws, chargerId, messageId, action, payload) {
+
+  console.log("=================================");
+  console.log(`📥 OCPP MESSAGE FROM CP`);
+  console.log(`Charger: ${chargerId}`);
+  console.log(`Action : ${action}`);
+  console.log(`Msg ID : ${messageId}`);
+  console.log(`Payload:`, JSON.stringify(payload, null, 2));
+  console.log("=================================");
   const handler = handlers[action];
 
   if (!handler) {

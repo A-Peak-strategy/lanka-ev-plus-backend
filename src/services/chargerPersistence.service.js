@@ -10,10 +10,12 @@ export const syncChargerToDb = async (chargerId) => {
       ? state.status.toUpperCase()
       : state.status;
 
+  // In-memory store uses "connectionStatus", DB uses "connectionState"
+  const rawConnection = state.connectionStatus || state.connectionState || "DISCONNECTED";
   const normalizedConnectionState =
-    typeof state.connectionStatus === "string"
-      ? state.connectionStatus.toUpperCase()
-      : state.connectionStatus;
+    typeof rawConnection === "string"
+      ? rawConnection.toUpperCase()
+      : "DISCONNECTED";
 
   await prisma.charger.upsert({
     where: { id: chargerId },

@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { AuthorizationStatus } from "../ocppConstants.js";
-import { updateChargerState } from "../../services/chargerStore.service.js";
+import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
 import { generateTransactionId } from "../../utils/generateTransactionId.js";
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
@@ -15,22 +15,21 @@ import Decimal from "decimal.js";
  * 
  * Sent by the Charge Point when a charging session starts.
  * 
- * Booking Integration:
- * - Validates if user has a booking OR if walk-in is allowed
- * - Marks booking as used if applicable
- * - Acquires connector lock for the session
+ * IMPORTANT: Per OCPP 1.6 Section 6.46, transactionId MUST be an integer.
+ * We use the DB autoincrement session.id as the OCPP transactionId, and
+ * keep the string-based transactionId for internal reference/billing.
  * 
  * Request: {
- *   connectorId: number,
- *   idTag: string,
- *   meterStart: number (Wh),
- *   reservationId?: number,
- *   timestamp: ISO8601
+ *   connectorId: number (Required),
+ *   idTag: CiString20Type (Required),
+ *   meterStart: integer Wh (Required),
+ *   reservationId?: integer,
+ *   timestamp: ISO8601 (Required)
  * }
  * 
  * Response: {
- *   transactionId: number,
- *   idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? }
+ *   transactionId: integer (Required),
+ *   idTagInfo: { status: AuthorizationStatus, expiryDate?, parentIdTag? } (Required)
  * }
  */
 export default async function startTransaction(ws, messageId, chargerId, payload) {
@@ -40,14 +39,15 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     meterStart,
     reservationId,
     timestamp,
+    status,
   } = payload;
 
   const startTime = timestamp ? new Date(timestamp) : new Date();
 
   console.log(`[START] ${chargerId}#${connectorId}: idTag=${idTag}, meter=${meterStart}Wh`);
 
-  // Generate unique transaction ID
-  const transactionId = generateTransactionId(chargerId);
+  // Generate internal transaction ID string (for billing, ledger, etc.)
+  const internalTransactionId = generateTransactionId(chargerId);
 
   // Check authorization
   const authResult = await checkStartAuthorization(chargerId, connectorId, idTag, reservationId);
@@ -67,13 +67,22 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const pricing = await billingService.getPricingForCharger(chargerId);
 
   // Resolve user from idTag
-  const userId = await resolveUserFromIdTag(idTag);
+  // Prefer pendingUserId stored in the in-memory chargersStore by startChargingForUser.
+  // We read from the Map directly because getChargerState() may return DB data
+  // where pendingUserId was stripped by the RUNTIME_ALLOWED whitelist.
+  const { chargersStore } = await import("../../services/chargerStore.service.js");
+  const cachedState = chargersStore.get(chargerId);
+  const pendingUserId = cachedState?.pendingUserId;
+  const pendingPresetAmount = cachedState?.pendingPresetAmount;
+  const userId = pendingUserId || await resolveUserFromIdTag(idTag);
+
+  console.log(`[START] userId resolution: pendingUserId=${pendingUserId}, resolvedUserId=${userId}${pendingPresetAmount ? `, presetAmount: LKR ${pendingPresetAmount}` : ''}`);
 
   // Acquire connector lock for this charging session
   const lockResult = await connectorLockService.markChargingActive(
     chargerId,
     connectorId,
-    transactionId
+    internalTransactionId
   );
 
   if (!lockResult.acquired) {
@@ -82,33 +91,47 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   }
 
   // Create session in database
+  // session.id (autoincrement integer) will be used as the OCPP transactionId
   const { session, duplicate } = await sessionService.createSession({
     chargerId,
     connectorId,
-    transactionId,
+    transactionId: internalTransactionId,
     idTag,
     userId,
     meterStart,
     timestamp: startTime,
     pricePerKwh: pricing?.pricePerKwh,
+    presetAmount: pendingPresetAmount || null,
   });
 
+
   if (duplicate) {
-    console.log(`[START] Duplicate transaction: ${transactionId}`);
+    console.log(`[START] Duplicate transaction: ${internalTransactionId}`);
   }
 
-  // Update charger state
-  updateChargerState(chargerId, {
-    status: "Charging",
-    transactionId,
+  // OCPP transactionId MUST be an integer (OCPP 1.6 Section 6.46)
+  // Use session.id (autoincrement Int from DB) as the OCPP transaction ID
+  const ocppTransactionId = session.id;
+
+  // Update charger state - store both IDs for cross-reference
+  await updateChargerState(chargerId, {
+    status: status || "CHARGING",
+    internalTransactionId: internalTransactionId,   // ✅ CORRECT
+    transactionId: session.transactionId,  // internal
+    ocppTransactionId: session.id,                 // session PK
     connectorId,
-    meterStart,
-    lastMeterValue: meterStart,
+    meterStartWh: meterStart,
+    lastMeterValueWh: meterStart,
     idTag,
     userId,
+    pendingUserId: null,  // Clear after session created
+    pendingPresetAmount: null, // Clear after session created
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
+
+
+
 
   // Mark booking as used if applicable
   if (authResult.bookingId) {
@@ -120,7 +143,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   ocppEvents.emitSessionStarted({
     chargerId,
     connectorId,
-    transactionId,
+    transactionId: internalTransactionId,
+    ocppTransactionId,
     idTag,
     userId,
     meterStart,
@@ -129,16 +153,16 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     startType: authResult.type, // BOOKING or WALKIN
   });
 
-  // Send response
+  // Send response - transactionId MUST be integer per OCPP 1.6 spec
   sendCallResult(ws, messageId, {
-    transactionId,
+    transactionId: ocppTransactionId,
     idTagInfo: {
       status: AuthorizationStatus.ACCEPTED,
       expiryDate: getExpiryDate(24),
     },
   });
 
-  console.log(`✅ [START] Transaction ${transactionId} started (${authResult.type})`);
+  console.log(`✅ [START] Session ${ocppTransactionId} (internal: ${internalTransactionId}) started (${authResult.type})`);
 }
 
 /**
@@ -192,7 +216,7 @@ async function checkStartAuthorization(chargerId, connectorId, idTag, reservatio
 async function validateReservation(chargerId, connectorId, reservationId, idTag) {
   // Find booking by hashed reservation ID
   // This is a reverse lookup - in production you might store the reservationId in the booking
-  
+
   const connector = await prisma.connector.findFirst({
     where: { chargerId, connectorId },
   });
@@ -214,7 +238,7 @@ async function validateReservation(chargerId, connectorId, reservationId, idTag)
 
   // Check if the user matches the booking
   const userId = await resolveUserFromIdTag(idTag);
-  
+
   if (userId && activeBooking.userId === userId) {
     return { valid: true };
   }
@@ -294,7 +318,7 @@ async function checkUserAuthorization(idTag) {
   }
 
   const balance = new Decimal(wallet.balance.toString());
-  
+
   // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
   if (balance.lte(0)) {
     return {

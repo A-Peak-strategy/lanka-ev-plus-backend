@@ -105,6 +105,7 @@ async function main() {
       name: "System Administrator",
       role: "ADMIN",
       isActive: true,
+      ocppIdTag: `ADMIN-${adminFirebaseUid.slice(0, 8)}`,
     },
   });
 
@@ -169,6 +170,7 @@ async function main() {
         phone: phone,
         role: "OWNER",
         isActive: true,
+        ocppIdTag: `OWNER-${firebaseUid.slice(0, 8)}`,
       },
     });
 
@@ -242,6 +244,7 @@ async function main() {
         phone: phone,
         role: "CONSUMER",
         isActive: true,
+        ocppIdTag: `CONSUMER-${firebaseUid.slice(0, 8)}`,
         wallet: {
           create: {
             balance: balance,
@@ -430,7 +433,33 @@ async function main() {
     }
   }
 
-  console.log(`✅ Created ${chargers.length} chargers with connectors`);
+  // ============================================
+  // 6b. CREATE DUMMY CHARGER "chargerone" FOR TESTING
+  // ============================================
+  const chargerone = await prisma.charger.create({
+    data: {
+      id: "chargerone",
+      serialNumber: "SN-CHARGERONE-001",
+      stationId: stations[0].id, // Colombo Fort Central
+      vendor: "Dummy",
+      model: "Test Charger",
+      firmwareVersion: "1.0.0",
+      status: "AVAILABLE",
+      connectionState: "DISCONNECTED",
+      isRegistered: true,
+      registeredAt: new Date(),
+      connectors: {
+        create: [
+          { connectorId: 1, status: "AVAILABLE" },
+          { connectorId: 2, status: "AVAILABLE" },
+        ],
+      },
+    },
+    include: { connectors: true },
+  });
+  chargers.push(chargerone);
+
+  console.log(`✅ Created ${chargers.length} chargers with connectors (including dummy: chargerone)`);
 
   // ============================================
   // GENERATE CREDENTIALS DOCUMENT
