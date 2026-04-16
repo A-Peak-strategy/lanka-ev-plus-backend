@@ -133,6 +133,9 @@ export default async function startTransaction(ws, messageId, chargerId, payload
 
 
 
+  // Update session status to CHARGING (confirmed by charger)
+  await sessionService.updateSessionStatus(internalTransactionId, "CHARGING");
+
   // Mark booking as used if applicable
   if (authResult.bookingId) {
     await bookingService.markBookingUsed(authResult.bookingId);

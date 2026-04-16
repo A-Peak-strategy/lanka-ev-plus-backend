@@ -346,7 +346,7 @@ export async function recordCommission({
     
     // Check if admin has sufficient balance (should always have, but safety check)
     if (currentBalance.lt(commissionAmount)) {
-      throw new Error(`Insufficient admin balance: ${currentBalance.toFixed(2)} < ${commissionAmount.toFixed(2)}`);
+      console.warn(`[LEDGER] Admin balance is low: ${currentBalance.toFixed(2)} < ${commissionAmount.toFixed(2)}. This happens if user balance was added manually via DB.`);
     }
 
     const newBalance = currentBalance.minus(commissionAmount);

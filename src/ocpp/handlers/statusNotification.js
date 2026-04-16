@@ -68,6 +68,23 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
     await handleFault(chargerId, connectorId, status, errorCode, info);
   }
 
+  // Update session status based on OCPP status transitions
+  const activeSession = await sessionService.getActiveSession(chargerId);
+  if (activeSession) {
+    const statusMapping = {
+      [ChargePointStatus.CHARGING]: "CHARGING",
+      [ChargePointStatus.FINISHING]: "FINISHING",
+      [ChargePointStatus.SUSPENDED_EV]: "SUSPENDED",
+      [ChargePointStatus.SUSPENDED_EVSE]: "SUSPENDED",
+      [ChargePointStatus.FAULTED]: "FAULTED",
+    };
+
+    const newSessionStatus = statusMapping[status];
+    if (newSessionStatus) {
+      await sessionService.updateSessionStatus(activeSession.transactionId, newSessionStatus);
+    }
+  }
+
   // Handle finishing (charging completed, unplugged)
   if (status === ChargePointStatus.FINISHING) {
     console.log(`[STATUS] ${chargerId}#${connectorId}: Finishing - cable may be unplugged`);

@@ -160,6 +160,7 @@ export async function getSessionHistory(req, res) {
     const formatted = sessions.map((s) => ({
         id: s.id,
         transactionId: s.transactionId,
+        status: s.status,
         energyUsedWh: s.energyUsedWh,
         energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),
         totalCost: s.totalCost?.toString() || "0.00",
@@ -216,6 +217,65 @@ export async function getSessionStats(req, res) {
     res.json({
         success: true,
         stats,
+    });
+}
+
+/**
+ * Get active charging sessions for authenticated user
+ * GET /api/user/me/sessions/active
+ *
+ * Used by the mobile app to restore active sessions when user reopens the app.
+ * Returns sessions with status PENDING, CHARGING, SUSPENDED, or FINISHING.
+ */
+export async function getActiveSessions(req, res) {
+    const user = req.user;
+
+    if (!user) {
+        throw new AuthenticationError("User authentication required");
+    }
+
+    const sessions = await sessionService.getActiveSessionsForUser(user.id);
+
+    const formatted = sessions.map((s) => ({
+        id: s.id,
+        transactionId: s.transactionId,
+        status: s.status,
+        energyUsedWh: s.energyUsedWh,
+        energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),
+        totalCost: s.totalCost?.toString() || "0.00",
+        pricePerKwh: s.pricePerKwh?.toString() || "0.00",
+        startedAt: s.startedAt,
+        endedAt: s.endedAt,
+        charger: s.charger
+            ? {
+                id: s.charger.id,
+                vendor: s.charger.vendor,
+                model: s.charger.model,
+                station: s.charger.station
+                    ? {
+                        name: s.charger.station.name,
+                        address: s.charger.station.address,
+                    }
+                    : null,
+            }
+            : null,
+        live: s.live
+            ? {
+                energyWh: s.live.energyWh,
+                powerW: s.live.powerW,
+                voltageV: s.live.voltageV,
+                currentA: s.live.currentA,
+                socPercent: s.live.socPercent,
+                temperatureC: s.live.temperatureC,
+                lastUpdated: s.live.lastMeterAt,
+            }
+            : null,
+    }));
+
+    res.json({
+        success: true,
+        count: formatted.length,
+        sessions: formatted,
     });
 }
 
@@ -279,5 +339,6 @@ export default {
     updateProfile,
     getSessionHistory,
     getSessionStats,
+    getActiveSessions,
     deleteAccount,
 };
