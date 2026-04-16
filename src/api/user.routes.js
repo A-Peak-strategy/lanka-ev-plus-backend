@@ -4,6 +4,7 @@ import {
     updateProfile,
     getSessionHistory,
     getSessionStats,
+    getActiveSessions,
     deleteAccount,
 } from "./user.controller.js";
 import {
@@ -27,6 +28,9 @@ router.delete("/me", deleteAccount);
 
 // GET /api/user/me/sessions - Get charging session history
 router.get("/me/sessions", getSessionHistory);
+
+// GET /api/user/me/sessions/active - Get active charging sessions (for app restore)
+router.get("/me/sessions/active", getActiveSessions);
 
 // GET /api/user/me/sessions/stats - Get session statistics
 router.get("/me/sessions/stats", getSessionStats);
