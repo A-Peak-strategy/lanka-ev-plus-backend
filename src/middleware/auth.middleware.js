@@ -33,9 +33,11 @@ export async function verifyToken(req, res, next) {
       where: { firebaseUid: decodedToken.uid },
     });
 
-    if (!user) {
-      const emailToLink = decodedToken.email || req.body?.email || req.headers['x-user-email'] || null;
+    const emailToLink = decodedToken.email || req.body?.email || req.headers['x-user-email'] || null;
+    const phoneToLink = decodedToken.phone_number || req.body?.phone || req.headers['x-user-phone'] || null;
+    const nameToLink = decodedToken.name || req.body?.name || req.headers['x-user-name'] || null;
 
+    if (!user) {
       // Check if a user with this email already exists (e.g., from seed with different firebaseUid)
       const existingByEmail = emailToLink
         ? await prisma.user.findUnique({ where: { email: emailToLink } })
@@ -53,8 +55,8 @@ export async function verifyToken(req, res, next) {
           data: {
             firebaseUid: decodedToken.uid,
             email: emailToLink,
-            phone: decodedToken.phone_number || req.body?.phone || req.headers['x-user-phone'] || null,
-            name: decodedToken.name || req.body?.name || req.headers['x-user-name'] || null,
+            phone: phoneToLink,
+            name: nameToLink,
             role: "CONSUMER",
             ocppIdTag: makeOcppIdTag(),
           },
@@ -62,6 +64,51 @@ export async function verifyToken(req, res, next) {
       }
 
       // Ensure wallet exists
+      const wallet = await prisma.wallet.findUnique({ where: { userId: user.id } });
+      if (!wallet) {
+        await prisma.wallet.create({
+          data: { userId: user.id, balance: 0, currency: "LKR" },
+        });
+      }
+    } else {
+      // Auto-sync missing fields
+      let needsUpdate = false;
+      const updatePayload = {};
+
+      if (!user.email && emailToLink) {
+        // Ensure email isn't already used
+        const existingEmail = await prisma.user.findUnique({ where: { email: emailToLink } });
+        if (!existingEmail) {
+          updatePayload.email = emailToLink;
+          needsUpdate = true;
+        }
+      }
+
+      if (!user.phone && phoneToLink) {
+        const existingPhone = await prisma.user.findUnique({ where: { phone: phoneToLink } });
+        if (!existingPhone) {
+          updatePayload.phone = phoneToLink;
+          needsUpdate = true;
+        }
+      }
+
+      if (!user.name && nameToLink) {
+        updatePayload.name = nameToLink;
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        try {
+          user = await prisma.user.update({
+            where: { id: user.id },
+            data: updatePayload
+          });
+        } catch (error) {
+          console.error("Auto-sync missing fields failed:", error);
+        }
+      }
+      
+      // Ensure wallet exists just in case
       const wallet = await prisma.wallet.findUnique({ where: { userId: user.id } });
       if (!wallet) {
         await prisma.wallet.create({
