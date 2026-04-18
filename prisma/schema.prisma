@@ -300,6 +300,9 @@ model ChargingSession {
   // OCPP data
   idTag           String?
   
+  // Session lifecycle status
+  status          SessionStatus @default(PENDING)
+  
   // Meter readings (in Wh)
   meterStartWh    Int?
   meterStopWh     Int?
@@ -341,6 +344,16 @@ model ChargingSession {
   @@index([userId])
   @@index([transactionId])
   @@index([startedAt])
+  @@index([userId, status])
+}
+
+enum SessionStatus {
+  PENDING       // Session created, waiting for charger to confirm
+  CHARGING      // Actively charging
+  SUSPENDED     // Temporarily paused (SuspendedEV / SuspendedEVSE)
+  FINISHING     // Charging done, cable still connected
+  COMPLETED     // Session ended normally
+  FAULTED       // Charger reported a fault during session
 }
 
 enum StopReason {

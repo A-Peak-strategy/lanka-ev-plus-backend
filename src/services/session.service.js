@@ -108,6 +108,7 @@ export async function createSession(data) {
       pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
       presetAmount: presetAmount ? new Decimal(presetAmount).toFixed(2) : null,
       lastBilledWh: meterStart || 0,
+      status: "PENDING",
     },
   });
 
@@ -184,6 +185,7 @@ export async function finalizeSession(data) {
       endedAt: endTime,
       energyUsedWh: Math.max(0, energyUsed),
       stopReason: mapStopReason(reason),
+      status: "COMPLETED",
     },
   });
 
@@ -255,6 +257,7 @@ export async function handleSessionFault(data) {
       endedAt: new Date(),
       stopReason: "CHARGER_FAULT",
       totalCost: actualCost.toFixed(2),
+      status: "FAULTED",
     },
   });
 
@@ -281,6 +284,77 @@ export async function getActiveSession(chargerId) {
     where: {
       chargerId,
       endedAt: null,
+    },
+    orderBy: { startedAt: "desc" },
+  });
+}
+
+/**
+ * Update session status (for OCPP state transitions)
+ * 
+ * @param {number} transactionId - Internal transaction ID (ChargingSession.transactionId)
+ * @param {string} status - SessionStatus enum value
+ * @returns {Promise<object|null>} Updated session or null
+ */
+export async function updateSessionStatus(transactionId, status) {
+  try {
+    const session = await prisma.chargingSession.findUnique({
+      where: { transactionId },
+    });
+
+    if (!session) {
+      console.warn(`[SESSION] Cannot update status: session ${transactionId} not found`);
+      return null;
+    }
+
+    // Don't update status if session is already in a terminal state
+    if (session.status === "COMPLETED" || session.status === "FAULTED") {
+      console.log(`[SESSION] Skipping status update for ${transactionId}: already ${session.status}`);
+      return session;
+    }
+
+    const updated = await prisma.chargingSession.update({
+      where: { transactionId },
+      data: { status },
+    });
+
+    console.log(`[SESSION] Status updated: ${transactionId} → ${status}`);
+    return updated;
+  } catch (error) {
+    console.error(`[SESSION] Error updating status for ${transactionId}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Get all active charging sessions for a specific user
+ * 
+ * Active = status is PENDING, CHARGING, SUSPENDED, or FINISHING
+ * Used by the mobile app to restore active sessions on app reopen.
+ * 
+ * @param {string} userId
+ * @returns {Promise<object[]>} Active sessions with charger/station/live data
+ */
+export async function getActiveSessionsForUser(userId) {
+  return prisma.chargingSession.findMany({
+    where: {
+      userId,
+      status: {
+        in: ["PENDING", "CHARGING", "SUSPENDED", "FINISHING"],
+      },
+    },
+    include: {
+      charger: {
+        include: {
+          station: {
+            select: {
+              name: true,
+              address: true,
+            },
+          },
+        },
+      },
+      live: true,
     },
     orderBy: { startedAt: "desc" },
   });
@@ -430,6 +504,8 @@ export default {
   finalizeSession,
   handleSessionFault,
   getActiveSession,
+  updateSessionStatus,
+  getActiveSessionsForUser,
   getSessionByTransactionId,
   recoverSessionAfterReconnect,
   handleOfflineReplay,
