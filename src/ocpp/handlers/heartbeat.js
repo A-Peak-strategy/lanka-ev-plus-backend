@@ -1,5 +1,5 @@
 import { sendCallResult } from "../messageQueue.js";
-import { updateChargerState } from "../../services/chargerStore.service.js";
+import { getAllConnectorStates, updateConnectorState } from "../../services/chargerStore.service.js";
 import { ocppEvents } from "../ocppEvents.js";
 import prisma from "../../config/db.js";
 
@@ -9,6 +9,10 @@ import prisma from "../../config/db.js";
  * The Charge Point sends Heartbeat to let the Central System know it's still alive.
  * The Central System responds with the current time.
  * 
+ * Heartbeat is charger-level (not connector-level).
+ * We update the lastHeartbeat on the Charger model and mark
+ * all connectors' connectionStatus as Connected.
+ * 
  * Frequency: Configured in BootNotification response (interval field)
  * 
  * Request: {} (empty)
@@ -17,11 +21,26 @@ import prisma from "../../config/db.js";
 export default async function heartbeat(ws, messageId, chargerId, payload) {
   const currentTime = new Date();
 
-  // Update charger state
-  updateChargerState(chargerId, {
-    lastHeartbeat: currentTime,
-    connectionStatus: "Connected",
-  });
+  // Update connectionStatus on all known connectors for this charger
+  try {
+    const connMap = await getAllConnectorStates(chargerId);
+    if (connMap && connMap.size > 0) {
+      for (const [connId] of connMap) {
+        await updateConnectorState(chargerId, connId, {
+          lastHeartbeat: currentTime,
+          connectionStatus: "Connected",
+        });
+      }
+    } else {
+      // Fallback: at least update connector 1
+      await updateConnectorState(chargerId, 1, {
+        lastHeartbeat: currentTime,
+        connectionStatus: "Connected",
+      });
+    }
+  } catch (err) {
+    console.error(`[HEARTBEAT] Failed to update connector states for ${chargerId}:`, err.message);
+  }
 
   // Emit event
   ocppEvents.emitHeartbeat(chargerId);
@@ -50,4 +69,3 @@ async function updateChargerHeartbeat(chargerId, timestamp) {
     },
   });
 }
-

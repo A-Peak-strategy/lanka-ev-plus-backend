@@ -2,7 +2,7 @@ import "dotenv/config";
 import http from "http";
 import app from "./app.js";
 import { startOcppServer } from "./ocpp/ocppServer.js";
-import chargerStore from "./services/chargerStore.service.js";
+import { chargersStore } from "./services/chargerStore.service.js";
 import { syncChargerToDb } from "./services/chargerPersistence.service.js";
 import { initializeFirebase } from "./config/firebase.js";
 import { checkRedisAvailable } from "./config/redis.js";
@@ -87,7 +87,7 @@ server.listen(PORT, async () => {
 
 // Periodic charger sync to database
 setInterval(() => {
-  chargerStore.forEach((_, chargerId) => {
+  chargersStore.forEach((_, chargerId) => {
     syncChargerToDb(chargerId);
   });
 }, 60000); // every 60 sec

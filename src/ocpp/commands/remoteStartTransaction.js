@@ -60,7 +60,7 @@ export async function remoteStartTransaction(chargerId, options) {
   }
 
   try {
-    console.log(`[CMD] RemoteStartTransaction → ${chargerId} (idTag: ${idTag})`);
+    console.log(`[CMD] RemoteStartTransaction → ${chargerId}#${connectorId || '?'} (idTag: ${idTag})`);
 
     const response = await sendCall(
       ws,
@@ -92,14 +92,17 @@ export async function remoteStartTransaction(chargerId, options) {
 }
 
 /**
- * Start charging for a user at a specific charger
+ * Start charging for a user at a specific charger + connector
  * 
- * High-level function that handles user lookup and starts charging
+ * High-level function that handles user lookup and starts charging.
+ * Stores pendingUserId keyed by (chargerId, connectorId) so the
+ * StartTransaction handler knows which user to associate with which connector.
  * 
  * @param {object} params
  * @param {string} params.chargerId - Charger ID
  * @param {string} params.userId - User ID
- * @param {number} params.connectorId - Connector ID (optional, defaults to 1)
+ * @param {number} params.connectorId - Connector ID (defaults to 1)
+ * @param {number} params.presetAmount - Preset charging amount (optional)
  * @returns {Promise<object>}
  */
 export async function startChargingForUser(params) {
@@ -109,19 +112,14 @@ export async function startChargingForUser(params) {
   // User IDs (CUIDs) can be ~25 chars, so truncate for OCPP compliance.
   const idTag = userId.substring(0, 20);
 
-  // Store the full userId directly in the in-memory charger store.
-  // IMPORTANT: We use the Map directly because updateChargerState() writes
-  // to the DB via chargerRuntimeState which has a field whitelist that
-  // silently drops unknown fields like pendingUserId.
-  const { chargersStore } = await import("../../services/chargerStore.service.js");
-  const currentState = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, {
-    ...currentState,
-    pendingUserId: userId,
-    pendingPresetAmount: presetAmount || null,
-  });
+  // Store the full userId in the connector-specific cache.
+  // This is keyed by (chargerId, connectorId) so starting on connector 2
+  // does NOT overwrite connector 1's pendingUserId.
+  const { setConnectorCacheField } = await import("../../services/chargerStore.service.js");
+  setConnectorCacheField(chargerId, connectorId, "pendingUserId", userId);
+  setConnectorCacheField(chargerId, connectorId, "pendingPresetAmount", presetAmount || null);
 
-  console.log(`[CMD] Stored pendingUserId for ${chargerId}: ${userId}${presetAmount ? `, presetAmount: LKR ${presetAmount}` : ''}`);
+  console.log(`[CMD] Stored pendingUserId for ${chargerId}#${connectorId}: ${userId}${presetAmount ? `, presetAmount: LKR ${presetAmount}` : ''}`);
 
   return remoteStartTransaction(chargerId, {
     idTag,
@@ -133,4 +131,3 @@ export default {
   remoteStartTransaction,
   startChargingForUser,
 };
-

@@ -1,7 +1,7 @@
-import { chargersStore } from "../services/chargerStore.service.js";
+import { chargersStore, getAllConnectorStates, getConnectorState, getConnectorCacheRaw } from "../services/chargerStore.service.js";
 import { isChargerOnline, getConnectedChargerIds, getChargerMetadata } from "../ocpp/ocppServer.js";
 import { startChargingForUser } from "../ocpp/commands/remoteStartTransaction.js";
-import { stopChargingAtCharger } from "../ocpp/commands/remoteStopTransaction.js";
+import { stopChargingAtCharger, stopChargingAtConnector } from "../ocpp/commands/remoteStopTransaction.js";
 import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
@@ -28,15 +28,51 @@ export const getAllChargers = async (req, res, next) => {
             connectorId: true,
             status: true,
           },
+          orderBy: { connectorId: "asc" },
         },
       },
       orderBy: { lastSeen: "desc" },
     });
 
     // Merge with in-memory state
-    const chargers = dbChargers.map((charger) => {
-      const memState = chargersStore.get(charger.id);
+    const chargers = await Promise.all(dbChargers.map(async (charger) => {
       const online = isChargerOnline(charger.id);
+
+      // Get per-connector live state
+      const connMap = await getAllConnectorStates(charger.id);
+      const connectorStates = [];
+
+      if (connMap && connMap.size > 0) {
+        for (const [connId, state] of connMap) {
+          connectorStates.push({
+            connectorId: connId,
+            status: state?.status || "UNAVAILABLE",
+            transactionId: state?.transactionId || null,
+            ocppTransactionId: state?.ocppTransactionId || null,
+            lastMeterValueWh: state?.lastMeterValueWh || null,
+            userId: state?.userId || null,
+          });
+        }
+      } else {
+        // Use DB connector data as fallback
+        for (const conn of charger.connectors) {
+          connectorStates.push({
+            connectorId: conn.connectorId,
+            status: conn.status,
+            transactionId: null,
+            ocppTransactionId: null,
+          });
+        }
+      }
+
+      // Determine aggregate status from connectors
+      let aggregateStatus = charger.status;
+      if (connectorStates.length > 0) {
+        const hasCharging = connectorStates.some(c => c.status === "CHARGING" || c.status === "Charging");
+        const allAvailable = connectorStates.every(c => c.status === "AVAILABLE" || c.status === "Available");
+        if (hasCharging) aggregateStatus = "CHARGING";
+        else if (allAvailable) aggregateStatus = "AVAILABLE";
+      }
 
       return {
         id: charger.id,
@@ -44,17 +80,15 @@ export const getAllChargers = async (req, res, next) => {
         vendor: charger.vendor,
         model: charger.model,
         firmwareVersion: charger.firmwareVersion,
-        status: memState?.status || charger.status,
+        status: aggregateStatus,
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        lastHeartbeat: memState?.lastHeartbeat || charger.lastHeartbeat,
+        lastHeartbeat: charger.lastHeartbeat,
         lastSeen: charger.lastSeen,
         station: charger.station,
-        connectors: charger.connectors,
-        // Active transaction info
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
+        connectors: connectorStates,
+        connectorCount: Math.max(connectorStates.length, charger.connectors.length),
       };
-    });
+    }));
 
     res.json({
       success: true,
@@ -83,7 +117,9 @@ export const getCharger = async (req, res, next) => {
       where: { id: chargerId },
       include: {
         station: true,
-        connectors: true,
+        connectors: {
+          orderBy: { connectorId: "asc" },
+        },
         sessions: {
           take: 10,
           orderBy: { startedAt: "desc" },
@@ -95,18 +131,42 @@ export const getCharger = async (req, res, next) => {
       throw new NotFoundError("Charger", chargerId);
     }
 
-    const memState = chargersStore.get(chargerId);
     const online = isChargerOnline(chargerId);
     const metadata = getChargerMetadata(chargerId);
+
+    // Get per-connector live state
+    const connMap = await getAllConnectorStates(chargerId);
+    const connectorStates = [];
+
+    if (connMap && connMap.size > 0) {
+      for (const [connId, state] of connMap) {
+        connectorStates.push({
+          connectorId: connId,
+          status: state?.status || "UNAVAILABLE",
+          transactionId: state?.transactionId || null,
+          ocppTransactionId: state?.ocppTransactionId || null,
+          meterStartWh: state?.meterStartWh || null,
+          lastMeterValueWh: state?.lastMeterValueWh || null,
+          userId: state?.userId || null,
+          idTag: state?.idTag || null,
+          sessionStartTime: state?.sessionStartTime || null,
+        });
+      }
+    } else {
+      for (const conn of charger.connectors) {
+        connectorStates.push({
+          connectorId: conn.connectorId,
+          status: conn.status,
+        });
+      }
+    }
 
     res.json({
       success: true,
       charger: {
         ...charger,
-        status: memState?.status || charger.status,
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
+        connectorStates,
         connectionMetadata: metadata,
       },
     });
@@ -138,7 +198,9 @@ export const lookupChargerByCode = async (req, res, next) => {
 
     const chargerInclude = {
       station: true,
-      connectors: true,
+      connectors: {
+        orderBy: { connectorId: "asc" },
+      },
       sessions: {
         take: 10,
         orderBy: { startedAt: "desc" },
@@ -174,18 +236,38 @@ export const lookupChargerByCode = async (req, res, next) => {
       throw new NotFoundError("Charger", trimmedCode);
     }
 
-    const memState = chargersStore.get(charger.id);
     const online = isChargerOnline(charger.id);
     const metadata = getChargerMetadata(charger.id);
+
+    // Get per-connector live state
+    const connMap = await getAllConnectorStates(charger.id);
+    const connectorStates = [];
+
+    if (connMap && connMap.size > 0) {
+      for (const [connId, state] of connMap) {
+        connectorStates.push({
+          connectorId: connId,
+          status: state?.status || "UNAVAILABLE",
+          transactionId: state?.transactionId || null,
+          ocppTransactionId: state?.ocppTransactionId || null,
+          userId: state?.userId || null,
+        });
+      }
+    } else {
+      for (const conn of charger.connectors) {
+        connectorStates.push({
+          connectorId: conn.connectorId,
+          status: conn.status,
+        });
+      }
+    }
 
     res.json({
       success: true,
       charger: {
         ...charger,
-        status: memState?.status || charger.status,
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
+        connectorStates,
         connectionMetadata: metadata,
       },
     });
@@ -195,40 +277,56 @@ export const lookupChargerByCode = async (req, res, next) => {
 };
 
 /**
- * Get charger status (real-time)
+ * Get charger status (real-time) — now returns per-connector state
  * 
  * GET /api/chargers/:chargerId/status
  */
-export const getChargerStatus = (req, res, next) => {
+export const getChargerStatus = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
 
     validateChargerId(chargerId);
 
-    const memState = chargersStore.get(chargerId);
     const online = isChargerOnline(chargerId);
 
-    if (!memState && !online) {
-      throw new NotFoundError("Charger", chargerId);
+    // Get all connector states
+    const connMap = await getAllConnectorStates(chargerId);
+    const connectors = [];
+
+    if (connMap && connMap.size > 0) {
+      for (const [connId, state] of connMap) {
+        const meterStart = state?.meterStartWh;
+        const lastMeter = state?.lastMeterValueWh;
+        connectors.push({
+          connectorId: connId,
+          status: state?.status || "Unknown",
+          transactionId: state?.transactionId ?? state?.ocppTransactionId ?? null,
+          ocppTransactionId: state?.ocppTransactionId ?? null,
+          meterWh: lastMeter ?? null,
+          meterStart: meterStart ?? null,
+          energyUsedWh: (meterStart != null && lastMeter != null)
+            ? Math.max(0, lastMeter - meterStart)
+            : null,
+          lastMeterTime: state?.lastMeterTime ?? null,
+          userId: state?.userId ?? null,
+          sessionStartTime: state?.sessionStartTime ?? null,
+        });
+      }
     }
 
-    // console.log("memState : ", JSON.stringify(memState,null,2));
+    if (connectors.length === 0 && !online) {
+      throw new NotFoundError("Charger", chargerId);
+    }
 
     res.json({
       success: true,
       chargerId,
       online,
-      status: memState?.status || "Unknown",
-      connectorId: memState?.connectorId,
-      transactionId: memState?.transactionId ?? memState?.ocppTransactionId,
-      ocppTransactionId: memState?.ocppTransactionId,
-      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh,
-      meterStart: memState?.meterStart ?? memState?.meterStartWh,
-      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
-        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
-        : null,
-      lastHeartbeat: memState?.lastHeartbeat,
-      lastMeterTime: memState?.lastMeterTime,
+      connectors,
+      // Legacy flat fields for backward-compat (from connector 1)
+      status: connectors[0]?.status || "Unknown",
+      transactionId: connectors[0]?.transactionId || null,
+      lastHeartbeat: connectors[0]?.lastHeartbeat || null,
     });
   } catch (error) {
     next(error);
@@ -236,10 +334,10 @@ export const getChargerStatus = (req, res, next) => {
 };
 
 /**
- * Start charging remotely
+ * Start charging remotely — now connector-aware
  * 
  * POST /api/chargers/:chargerId/start
- * Body: { userId?: string, connectorId?: number }
+ * Body: { userId?: string, connectorId?: number, presetAmount?: number }
  */
 export const startCharging = async (req, res, next) => {
   try {
@@ -261,11 +359,11 @@ export const startCharging = async (req, res, next) => {
       throw new ChargerOfflineError(chargerId);
     }
 
-    // Check for existing active transaction
-    const memState = chargersStore.get(chargerId);
-    if (memState?.transactionId) {
+    // Check for existing active transaction on THIS connector (not the whole charger)
+    const connState = await getConnectorState(chargerId, validConnectorId);
+    if (connState?.transactionId || connState?.ocppTransactionId) {
       throw new ConflictError(
-        "Charger already has an active transaction",
+        `Connector ${validConnectorId} already has an active transaction`,
         "ACTIVE_TRANSACTION_EXISTS"
       );
     }
@@ -278,7 +376,7 @@ export const startCharging = async (req, res, next) => {
       try {
         const lockResult = await walletService.lockFunds(userId, presetAmount);
         lockedAmount = presetAmount;
-        console.log(`[START] Locked LKR ${presetAmount} for user ${userId} on charger ${chargerId}`);
+        console.log(`[START] Locked LKR ${presetAmount} for user ${userId} on charger ${chargerId}#${validConnectorId}`);
       } catch (lockError) {
         if (lockError.name === "InsufficientBalanceError" || lockError.message?.includes("Insufficient")) {
           const available = await walletService.getAvailableBalance(userId);
@@ -306,7 +404,7 @@ export const startCharging = async (req, res, next) => {
     if (result.success) {
       res.json({
         success: true,
-        message: "Remote start command accepted",
+        message: `Remote start command accepted for connector ${validConnectorId}`,
         chargerId,
         connectorId: validConnectorId,
         presetAmount: lockedAmount,
@@ -330,13 +428,15 @@ export const startCharging = async (req, res, next) => {
 };
 
 /**
- * Stop charging remotely
+ * Stop charging remotely — now supports per-connector stop
  * 
  * POST /api/chargers/:chargerId/stop
+ * Body: { connectorId?: number }
  */
 export const stopCharging = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
+    const { connectorId } = req.body || {};
 
     validateChargerId(chargerId);
 
@@ -345,31 +445,72 @@ export const stopCharging = async (req, res, next) => {
       throw new ChargerOfflineError(chargerId);
     }
 
-    // Check for active transaction
-    const memState = chargersStore.get(chargerId);
-    if (!memState?.transactionId && !memState?.ocppTransactionId) {
-      throw new ConflictError(
-        "No active transaction to stop",
-        "NO_ACTIVE_TRANSACTION"
-      );
-    }
+    if (connectorId) {
+      // Stop a specific connector
+      const validConnectorId = validateConnectorId(connectorId);
+      const connState = await getConnectorState(chargerId, validConnectorId);
+      
+      if (!connState?.transactionId && !connState?.ocppTransactionId) {
+        throw new ConflictError(
+          `No active transaction on connector ${validConnectorId}`,
+          "NO_ACTIVE_TRANSACTION"
+        );
+      }
 
-    // Send RemoteStopTransaction
-    const result = await stopChargingAtCharger(chargerId);
-    console.log("Stop Charging result : ", JSON.stringify(result, null, 2));
+      const result = await stopChargingAtConnector(chargerId, validConnectorId);
+      console.log("Stop Charging result:", JSON.stringify(result, null, 2));
 
-    if (result.success) {
-      res.json({
-        success: true,
-        message: "Remote stop command accepted",
-        chargerId,
-        transactionId: result.transactionId,
-      });
+      if (result.success) {
+        res.json({
+          success: true,
+          message: `Remote stop command accepted for connector ${validConnectorId}`,
+          chargerId,
+          connectorId: validConnectorId,
+          transactionId: result.transactionId,
+        });
+      } else {
+        throw new ConflictError(
+          result.error || "Charger rejected stop command",
+          "CHARGER_REJECTED_STOP"
+        );
+      }
     } else {
-      throw new ConflictError(
-        result.error || "Charger rejected stop command",
-        "CHARGER_REJECTED_STOP"
-      );
+      // Stop first active session found (backward-compat)
+      // Check if ANY connector has an active session
+      const connMap = await getAllConnectorStates(chargerId);
+      let hasActive = false;
+      if (connMap) {
+        for (const [, state] of connMap) {
+          if (state?.transactionId || state?.ocppTransactionId) {
+            hasActive = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasActive) {
+        throw new ConflictError(
+          "No active transaction to stop",
+          "NO_ACTIVE_TRANSACTION"
+        );
+      }
+
+      const result = await stopChargingAtCharger(chargerId);
+      console.log("Stop Charging result:", JSON.stringify(result, null, 2));
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: "Remote stop command accepted",
+          chargerId,
+          transactionId: result.transactionId,
+        });
+      } else {
+        throw new ConflictError(
+          result.error || "Charger rejected stop command",
+          "CHARGER_REJECTED_STOP"
+        );
+      }
     }
   } catch (error) {
     console.error(`[STOP] Error stopping charger ${req.params.chargerId}:`, error.message, error.stack);
@@ -404,6 +545,9 @@ export const getChargerSessions = async (req, res, next) => {
       include: {
         user: {
           select: { id: true, name: true },
+        },
+        connector: {
+          select: { connectorId: true },
         },
       },
     });
@@ -440,6 +584,9 @@ export async function getLiveSession(req, res) {
       select: {
         totalCost: true,
         pricePerKwh: true,
+        connector: {
+          select: { connectorId: true },
+        },
       },
     }),
   ]);
@@ -463,6 +610,7 @@ export async function getLiveSession(req, res) {
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
       pricePerKwh: session?.pricePerKwh?.toString() ?? null,
+      connectorId: session?.connector?.connectorId ?? null,
     }
   });
 }

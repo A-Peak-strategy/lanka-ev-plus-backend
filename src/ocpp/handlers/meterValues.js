@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { Measurand } from "../ocppConstants.js";
-import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
+import { getConnectorState, updateConnectorState } from "../../services/chargerStore.service.js";
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
@@ -11,6 +11,9 @@ import prisma from "../../config/db.js";
  * OCPP MeterValues Handler
  * 
  * Sent by the Charge Point during a charging session to report meter readings.
+ * 
+ * Now connector-aware: reads state from the correct connector and routes
+ * billing/live updates to the right session.
  * 
  * Request: {
  *   connectorId: number,
@@ -34,34 +37,32 @@ import prisma from "../../config/db.js";
 export default async function meterValues(ws, messageId, chargerId, payload) {
   const { connectorId, transactionId, meterValue } = payload;
 
-  console.log(`[METER] ${chargerId}: Received meter values (${meterValue.length} entries)`);
+  console.log(`[METER] ${chargerId}#${connectorId}: Received meter values (${meterValue.length} entries)`);
 
   // Validate payload
   if (!meterValue || meterValue.length === 0) {
-    console.warn(`[METER] ${chargerId}: Empty meterValue`);
+    console.warn(`[METER] ${chargerId}#${connectorId}: Empty meterValue`);
     sendCallResult(ws, messageId, {});
     return;
   }
 
-  // Get charger state - use internal string transactionId for billing
-  const chargerState = await getChargerState(chargerId);
+  // Get connector-specific state (not charger-level!)
+  const connState = await getConnectorState(chargerId, connectorId);
 
-  const sessionId = chargerState?.ocppTransactionId; // ChargingSession.id (OCPP)
-  const txId = chargerState?.transactionId ?? chargerState?.ocppTransactionId ?? null; // ✅ fallback to ocppTransactionId
-
+  const sessionId = connState?.ocppTransactionId; // ChargingSession.id (OCPP)
+  const txId = connState?.transactionId ?? connState?.ocppTransactionId ?? null;
 
   if (!sessionId || !txId) {
-    console.warn(`[METER] ${chargerId}: No active session (sessionId=${sessionId}, txId=${txId})`);
+    console.warn(`[METER] ${chargerId}#${connectorId}: No active session (sessionId=${sessionId}, txId=${txId})`);
     sendCallResult(ws, messageId, {});
     return;
   }
-
 
   // Extract meter readings
   const readings = extractMeterReadings(meterValue);
 
   if (!readings.energy && readings.energy !== 0) {
-    console.warn(`[METER] ${chargerId}: No energy reading found`);
+    console.warn(`[METER] ${chargerId}#${connectorId}: No energy reading found`);
     sendCallResult(ws, messageId, {});
     return;
   }
@@ -69,8 +70,8 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   const energyWh = readings.energy;
   const meterTimestamp = new Date(meterValue[meterValue.length - 1].timestamp);
 
-  // Get the session's meterStartWh from the DB (source of truth) if chargerState doesn't have it
-  let sessionMeterStart = chargerState?.meterStartWh;
+  // Get the session's meterStartWh from connector state or DB
+  let sessionMeterStart = connState?.meterStartWh;
 
   if (sessionMeterStart == null) {
     // Fallback: read from ChargingSession table (set during StartTransaction)
@@ -80,20 +81,20 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
         select: { meterStartWh: true },
       });
       sessionMeterStart = dbSession?.meterStartWh ?? energyWh;
-      // Also update chargerState so future calls don't need the DB lookup
-      await updateChargerState(chargerId, { meterStartWh: sessionMeterStart });
+      // Also update connector state so future calls don't need the DB lookup
+      await updateConnectorState(chargerId, connectorId, { meterStartWh: sessionMeterStart });
     } catch (e) {
-      console.warn(`[METER] ${chargerId}: Could not fetch session meterStart, using current reading`);
+      console.warn(`[METER] ${chargerId}#${connectorId}: Could not fetch session meterStart, using current reading`);
       sessionMeterStart = energyWh;
     }
   }
 
   // Compute energy used in this session (for live display + event)
   const energyUsedWh = Math.max(0, energyWh - sessionMeterStart);
-  console.log(`[METER] ${chargerId}: meterStart=${sessionMeterStart}, current=${energyWh}, sessionEnergy=${energyUsedWh}Wh`);
+  console.log(`[METER] ${chargerId}#${connectorId}: meterStart=${sessionMeterStart}, current=${energyWh}, sessionEnergy=${energyUsedWh}Wh`);
 
-  // Single consolidated state update (fixes duplicate writes)
-  await updateChargerState(chargerId, {
+  // Single consolidated state update for THIS connector
+  await updateConnectorState(chargerId, connectorId, {
     lastMeterValueWh: energyWh,
     lastMeterTime: new Date(),
   });
@@ -111,17 +112,12 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     });
 
     await sessionService.updateSessionMeter(sessionId, energyWh);
-    console.log(`[METER] ${chargerId}: ${energyWh}Wh (session: ${energyUsedWh}Wh)`);
+    console.log(`[METER] ${chargerId}#${connectorId}: ${energyWh}Wh (session: ${energyUsedWh}Wh)`);
   } catch (error) {
     console.error(`[METER] Live session update failed:`, error.message);
   }
 
-
-
-
   // Process billing directly (NOT via event emitter to avoid double billing)
-  // The session:meterUpdate event listener in ocppEvents.js also calls billing,
-  // so we emit the event AFTER billing to share the result with other listeners.
   try {
     const billingResult = await billingService.processMeterValuesBilling({
       chargerId,
@@ -131,23 +127,20 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
 
     if (billingResult.success && !billingResult.skipped && !billingResult.duplicate) {
       console.log(
-        `[METER] ${chargerId}: ${energyWh}Wh (+${billingResult.incrementalWh}Wh), ` +
+        `[METER] ${chargerId}#${connectorId}: ${energyWh}Wh (+${billingResult.incrementalWh}Wh), ` +
         `Billed: LKR ${billingResult.incrementalCost}, Balance: LKR ${billingResult.newBalance}`
       );
     } else if (billingResult.insufficientFunds) {
       console.log(
-        `[METER] ${chargerId}: ${energyWh}Wh - INSUFFICIENT FUNDS ` +
+        `[METER] ${chargerId}#${connectorId}: ${energyWh}Wh - INSUFFICIENT FUNDS ` +
         `(grace: ${billingResult.graceActive ? 'active' : 'started'})`
       );
     }
   } catch (error) {
-    console.error(`[METER] Billing error for ${chargerId}:`, error.message);
+    console.error(`[METER] Billing error for ${chargerId}#${connectorId}:`, error.message);
   }
 
-
-
   // Emit event AFTER billing (for other listeners like logging, notifications)
-  // Note: Do NOT add billing logic in the event listener to avoid double billing
   ocppEvents.emitMeterUpdate({
     chargerId,
     connectorId,

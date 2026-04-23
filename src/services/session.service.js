@@ -80,20 +80,20 @@ export async function createSession(data) {
     }
   }
 
-  // Also check for active session on charger (any connector)
-  const activeSessionOnCharger = await prisma.chargingSession.findFirst({
+  // Check for active sessions on other connectors of the same charger.
+  // For multi-connector chargers, this is EXPECTED (2 sessions = 2 connectors).
+  // Only log for awareness, don't block.
+  const activeSessionsOnCharger = await prisma.chargingSession.count({
     where: {
       chargerId,
       endedAt: null,
     },
   });
 
-  if (activeSessionOnCharger) {
-    console.warn(
-      `[SESSION] Active session ${activeSessionOnCharger.transactionId} exists on charger ${chargerId}`
+  if (activeSessionsOnCharger > 0) {
+    console.log(
+      `[SESSION] ${activeSessionsOnCharger} active session(s) already on charger ${chargerId} (multi-connector is OK)`
     );
-    // For single-connector chargers, this might be the same session
-    // Only warn, don't block - let the new transaction take over
   }
 
   const session = await prisma.chargingSession.create({
@@ -283,6 +283,40 @@ export async function getActiveSession(chargerId) {
   return prisma.chargingSession.findFirst({
     where: {
       chargerId,
+      endedAt: null,
+    },
+    orderBy: { startedAt: "desc" },
+  });
+}
+
+/**
+ * Get active session for a specific connector on a charger.
+ * 
+ * This is the multi-connector-aware version of getActiveSession.
+ * It finds sessions where the connector's OCPP connectorId matches.
+ * 
+ * @param {string} chargerId
+ * @param {number} connectorId - OCPP connector ID (1, 2, etc.)
+ * @returns {Promise<object|null>}
+ */
+export async function getActiveSessionForConnector(chargerId, connectorId) {
+  // Look up the Connector record to get its UUID
+  const connector = await prisma.connector.findUnique({
+    where: {
+      chargerId_connectorId: { chargerId, connectorId },
+    },
+    select: { id: true },
+  });
+
+  if (!connector) {
+    // No connector record exists — fall back to charger-level
+    return getActiveSession(chargerId);
+  }
+
+  return prisma.chargingSession.findFirst({
+    where: {
+      chargerId,
+      connectorId: connector.id,
       endedAt: null,
     },
     orderBy: { startedAt: "desc" },
@@ -504,6 +538,7 @@ export default {
   finalizeSession,
   handleSessionFault,
   getActiveSession,
+  getActiveSessionForConnector,
   updateSessionStatus,
   getActiveSessionsForUser,
   getSessionByTransactionId,

@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { AuthorizationStatus } from "../ocppConstants.js";
-import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
+import { getConnectorState, updateConnectorState, getAllConnectorStates } from "../../services/chargerStore.service.js";
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
@@ -15,6 +15,9 @@ import prisma from "../../config/db.js";
  * 
  * IMPORTANT: transactionId from charger is the integer we sent in StartTransaction.conf
  * (which is session.id). We resolve it to the internal string transactionId for billing.
+ * 
+ * This handler now resets ONLY the target connector's state, leaving other
+ * connectors unaffected.
  * 
  * Request: {
  *   idTag?: CiString20Type,
@@ -44,27 +47,16 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
   console.log(`[STOP] ${chargerId}: ocppTxId=${transactionId}, meter=${meterStop}Wh, reason=${reason || 'Normal'}`);
 
   // Resolve OCPP integer transactionId to internal string transactionId
-  // Priority: charger state (fastest) > DB lookup by session.id
-  const chargerState = await getChargerState(chargerId);
-  let activeTransactionId = chargerState?.transactionId;
-
-  if (!activeTransactionId && transactionId) {
-    // Charger state might have been lost (restart, etc.)
-    // Look up session by autoincrement ID (the integer we sent to charger)
-    const session = await prisma.chargingSession.findUnique({
-      where: { id: parseInt(transactionId) },
-    });
-    if (session) {
-      activeTransactionId = session.transactionId;
-      console.log(`[STOP] Resolved ocppTxId ${transactionId} → internal ${activeTransactionId}`);
-    }
-  }
+  // AND determine which connector this transaction belongs to
+  const { activeTransactionId, connectorId } = await resolveTransaction(chargerId, transactionId);
 
   if (!activeTransactionId) {
     console.warn(`[STOP] No active transaction found for ${chargerId}`);
     sendCallResult(ws, messageId, {});
     return;
   }
+
+  console.log(`[STOP] Resolved: connector=${connectorId}, internal=${activeTransactionId}`);
 
   try {
     // Process any remaining meter values from transactionData
@@ -128,6 +120,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     // Emit event
     ocppEvents.emitSessionStopped({
       chargerId,
+      connectorId,
       transactionId: activeTransactionId,
       meterStop,
       reason,
@@ -137,28 +130,29 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     });
 
     // Release connector lock
-    if (chargerState?.connectorId) {
+    if (connectorId) {
       await connectorLockService.markChargingComplete(
         chargerId,
-        chargerState.connectorId,
+        connectorId,
         activeTransactionId
       ).catch(err => console.error(`[STOP] Lock release error:`, err.message));
     }
 
-    // Reset charger state
-    updateChargerState(chargerId, {
+    // Reset ONLY this connector's state — other connectors are unaffected
+    await updateConnectorState(chargerId, connectorId, {
       status: "Available",
       transactionId: null,
+      internalTransactionId: null,
       ocppTransactionId: null,
-      meterStart: null,
-      lastMeterValue: null,
+      meterStartWh: null,
+      lastMeterValueWh: null,
       idTag: null,
       userId: null,
       sessionStartTime: null,
       bookingId: null,
     });
 
-    console.log(`✅ [STOP] Transaction ${activeTransactionId} completed: ` +
+    console.log(`✅ [STOP] Transaction ${activeTransactionId} completed on connector ${connectorId}: ` +
       `${((finalSession?.energyUsedWh || 0) / 1000).toFixed(2)} kWh, ` +
       `LKR ${finalSession?.totalCost?.toString() || '0.00'}`
     );
@@ -171,11 +165,13 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
       stack: error.stack,
     });
     
-    // Still try to reset charger state to prevent stuck state
-    updateChargerState(chargerId, {
+    // Still try to reset this connector's state to prevent stuck state
+    await updateConnectorState(chargerId, connectorId, {
       status: "Available",
       transactionId: null,
-    });
+      internalTransactionId: null,
+      ocppTransactionId: null,
+    }).catch(() => {});
   }
 
   // Send response
@@ -188,6 +184,50 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
   }
 
   sendCallResult(ws, messageId, response);
+}
+
+/**
+ * Resolve OCPP transactionId to internal transactionId + connectorId.
+ *
+ * Search order:
+ *   1. In-memory connector states (fastest)
+ *   2. DB session lookup by session.id (the OCPP integer)
+ */
+async function resolveTransaction(chargerId, ocppTxId) {
+  // 1. Search in-memory connector states
+  const connMap = await getAllConnectorStates(chargerId);
+  if (connMap && connMap.size > 0) {
+    for (const [connId, state] of connMap) {
+      if (state?.ocppTransactionId === ocppTxId || state?.transactionId === ocppTxId) {
+        return {
+          activeTransactionId: state.transactionId,
+          connectorId: connId,
+        };
+      }
+    }
+  }
+
+  // 2. DB lookup by session.id (the integer we sent to charger)
+  if (ocppTxId) {
+    const session = await prisma.chargingSession.findUnique({
+      where: { id: parseInt(ocppTxId) },
+      include: {
+        connector: {
+          select: { connectorId: true },
+        },
+      },
+    });
+    if (session) {
+      const connId = session.connector?.connectorId ?? 1;
+      console.log(`[STOP] Resolved ocppTxId ${ocppTxId} → internal ${session.transactionId}, connector ${connId}`);
+      return {
+        activeTransactionId: session.transactionId,
+        connectorId: connId,
+      };
+    }
+  }
+
+  return { activeTransactionId: null, connectorId: 1 };
 }
 
 /**

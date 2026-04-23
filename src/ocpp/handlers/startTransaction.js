@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { AuthorizationStatus } from "../ocppConstants.js";
-import { getChargerState, updateChargerState } from "../../services/chargerStore.service.js";
+import { getConnectorState, updateConnectorState, getConnectorCacheRaw } from "../../services/chargerStore.service.js";
 import { generateTransactionId } from "../../utils/generateTransactionId.js";
 import { ocppEvents } from "../ocppEvents.js";
 import sessionService from "../../services/session.service.js";
@@ -67,11 +67,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const pricing = await billingService.getPricingForCharger(chargerId);
 
   // Resolve user from idTag
-  // Prefer pendingUserId stored in the in-memory chargersStore by startChargingForUser.
-  // We read from the Map directly because getChargerState() may return DB data
-  // where pendingUserId was stripped by the RUNTIME_ALLOWED whitelist.
-  const { chargersStore } = await import("../../services/chargerStore.service.js");
-  const cachedState = chargersStore.get(chargerId);
+  // Prefer pendingUserId stored in the in-memory cache for this specific connector
+  const cachedState = getConnectorCacheRaw(chargerId, connectorId);
   const pendingUserId = cachedState?.pendingUserId;
   const pendingPresetAmount = cachedState?.pendingPresetAmount;
   const userId = pendingUserId || await resolveUserFromIdTag(idTag);
@@ -113,13 +110,12 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   // Use session.id (autoincrement Int from DB) as the OCPP transaction ID
   const ocppTransactionId = session.id;
 
-  // Update charger state - store both IDs for cross-reference
-  await updateChargerState(chargerId, {
+  // Update THIS CONNECTOR's state — does NOT affect other connectors
+  await updateConnectorState(chargerId, connectorId, {
     status: status || "CHARGING",
-    internalTransactionId: internalTransactionId,   // ✅ CORRECT
-    transactionId: session.transactionId,  // internal
-    ocppTransactionId: session.id,                 // session PK
-    connectorId,
+    internalTransactionId: internalTransactionId,
+    transactionId: session.transactionId,
+    ocppTransactionId: session.id,
     meterStartWh: meterStart,
     lastMeterValueWh: meterStart,
     idTag,
@@ -129,9 +125,6 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
-
-
-
 
   // Update session status to CHARGING (confirmed by charger)
   await sessionService.updateSessionStatus(internalTransactionId, "CHARGING");
@@ -165,7 +158,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     },
   });
 
-  console.log(`✅ [START] Session ${ocppTransactionId} (internal: ${internalTransactionId}) started (${authResult.type})`);
+  console.log(`✅ [START] Session ${ocppTransactionId} (internal: ${internalTransactionId}) started on connector ${connectorId} (${authResult.type})`);
 }
 
 /**
@@ -254,6 +247,9 @@ async function validateReservation(chargerId, connectorId, reservationId, idTag)
 
 /**
  * Check user-level authorization
+ * 
+ * NOTE: We allow a user to have concurrent sessions on DIFFERENT connectors.
+ * The limit is: max 2 active sessions per user across all chargers.
  */
 async function checkUserAuthorization(idTag) {
   // Accept known idTag patterns
@@ -285,7 +281,7 @@ async function checkUserAuthorization(idTag) {
     };
   }
 
-  // Check for concurrent transactions (optional)
+  // Check for concurrent transactions — allow up to 2 per user
   const activeSessions = await prisma.chargingSession.count({
     where: {
       userId: user.id,
@@ -293,10 +289,10 @@ async function checkUserAuthorization(idTag) {
     },
   });
 
-  if (activeSessions > 0) {
+  if (activeSessions >= 2) {
     return {
       status: AuthorizationStatus.CONCURRENT_TX,
-      reason: "User already has an active charging session",
+      reason: "User already has 2 active charging sessions (maximum reached)",
     };
   }
 

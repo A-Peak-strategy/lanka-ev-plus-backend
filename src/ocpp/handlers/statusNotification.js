@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { ChargePointStatus, ChargePointErrorCode } from "../ocppConstants.js";
-import { updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { updateConnectorState, getConnectorState } from "../../services/chargerStore.service.js";
 import { ocppEvents } from "../ocppEvents.js";
 import prisma from "../../config/db.js";
 import sessionService from "../../services/session.service.js";
@@ -37,10 +37,17 @@ export default async function statusNotification(ws, messageId, chargerId, paylo
 
   console.log(`[STATUS] ${chargerId}#${connectorId}: ${status} (${errorCode})`);
 
-  // Update in-memory state
-  updateChargerState(chargerId, {
+  // connectorId 0 = overall charger status (not a specific connector)
+  if (connectorId === 0) {
+    // Update charger-level status in DB only
+    await updateChargerOverallStatus(chargerId, status, errorCode);
+    sendCallResult(ws, messageId, {});
+    return;
+  }
+
+  // Update in-memory state for this specific connector
+  await updateConnectorState(chargerId, connectorId, {
     status,
-    connectorId,
     errorCode,
     connectionStatus: "Connected",
     lastStatusUpdate: statusTime,
@@ -56,7 +63,7 @@ export default async function statusNotification(ws, messageId, chargerId, paylo
   await updateConnectorStatus(chargerId, connectorId, status, errorCode);
 
   // Send empty response
-  sendCallResult(ws, messageId, {}); 
+  sendCallResult(ws, messageId, {});
 }
 
 /**
@@ -69,7 +76,8 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
   }
 
   // Update session status based on OCPP status transitions
-  const activeSession = await sessionService.getActiveSession(chargerId);
+  // Find active session for THIS specific connector
+  const activeSession = await sessionService.getActiveSessionForConnector(chargerId, connectorId);
   if (activeSession) {
     const statusMapping = {
       [ChargePointStatus.CHARGING]: "CHARGING",
@@ -102,8 +110,8 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
 async function handleFault(chargerId, connectorId, status, errorCode, info) {
   console.warn(`⚠️ [FAULT] ${chargerId}#${connectorId}: ${errorCode} - ${info || 'No details'}`);
 
-  // Check for active session on this connector
-  const session = await sessionService.getActiveSession(chargerId);
+  // Check for active session on this specific connector
+  const session = await sessionService.getActiveSessionForConnector(chargerId, connectorId);
 
   if (session) {
     // Emit fault event for billing to handle (partial refund, etc.)
@@ -118,22 +126,27 @@ async function handleFault(chargerId, connectorId, status, errorCode, info) {
 }
 
 /**
+ * Update charger overall status (connectorId = 0)
+ */
+async function updateChargerOverallStatus(chargerId, status, errorCode) {
+  try {
+    await prisma.charger.updateMany({
+      where: { id: chargerId },
+      data: {
+        status: mapStatus(status),
+        lastSeen: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error updating charger overall status:", error);
+  }
+}
+
+/**
  * Update connector status in database
  */
 async function updateConnectorStatus(chargerId, connectorId, status, errorCode) {
   try {
-    // Update charger overall status if connectorId is 0
-    if (connectorId === 0) {
-      await prisma.charger.updateMany({
-        where: { id: chargerId },
-        data: {
-          status: mapStatus(status),
-          lastSeen: new Date(),
-        },
-      });
-      return;
-    }
-
     // Update or create connector
     await prisma.connector.upsert({
       where: {
@@ -154,16 +167,49 @@ async function updateConnectorStatus(chargerId, connectorId, status, errorCode) 
       },
     });
 
-    // Also update charger status based on connector
+    // Also update charger status based on aggregate connector state
+    await updateChargerAggregateStatus(chargerId);
+  } catch (error) {
+    console.error("Error updating connector status:", error);
+  }
+}
+
+/**
+ * Compute aggregate charger status from all connectors.
+ * Priority: FAULTED > CHARGING > PREPARING > RESERVED > FINISHING > SUSPENDED > AVAILABLE > UNAVAILABLE
+ */
+async function updateChargerAggregateStatus(chargerId) {
+  try {
+    const connectors = await prisma.connector.findMany({
+      where: { chargerId },
+      select: { status: true },
+    });
+
+    if (connectors.length === 0) return;
+
+    const statusPriority = [
+      "FAULTED", "CHARGING", "PREPARING", "RESERVED",
+      "FINISHING", "SUSPENDED_EV", "SUSPENDED_EVSE", "AVAILABLE", "UNAVAILABLE",
+    ];
+
+    // Find the highest-priority status among all connectors
+    let aggregateStatus = "UNAVAILABLE";
+    for (const prio of statusPriority) {
+      if (connectors.some(c => c.status === prio)) {
+        aggregateStatus = prio;
+        break;
+      }
+    }
+
     await prisma.charger.updateMany({
       where: { id: chargerId },
       data: {
-        status: mapStatus(status),
+        status: aggregateStatus,
         lastSeen: new Date(),
       },
     });
   } catch (error) {
-    console.error("Error updating connector status:", error);
+    console.error("Error updating aggregate charger status:", error);
   }
 }
 

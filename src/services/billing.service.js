@@ -313,9 +313,9 @@ export async function processMeterValuesBilling({
     if (newTotalCost.gte(presetBudget)) {
       console.log(`[BILLING] Preset budget reached: LKR ${newTotalCost.toFixed(2)} >= LKR ${presetBudget.toFixed(2)} → auto-stopping charger ${chargerId}`);
 
-      // Fire-and-forget: send RemoteStopTransaction
-      import("../ocpp/commands/remoteStopTransaction.js").then(({ stopChargingAtCharger }) => {
-        stopChargingAtCharger(chargerId, { reason: 'PRESET_BUDGET_REACHED' }).catch(err =>
+      // Fire-and-forget: send RemoteStopTransaction for THIS specific session
+      import("../ocpp/commands/remoteStopTransaction.js").then(({ remoteStopTransaction }) => {
+        remoteStopTransaction(chargerId, session.transactionId).catch(err =>
           console.error(`[BILLING] Auto-stop failed:`, err.message)
         );
       });

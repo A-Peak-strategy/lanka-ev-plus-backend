@@ -1,6 +1,6 @@
 import { sendCallResult } from "../messageQueue.js";
 import { RegistrationStatus } from "../ocppConstants.js";
-import { updateChargerState } from "../../services/chargerStore.service.js";
+import { updateConnectorState } from "../../services/chargerStore.service.js";
 import { syncChargerToDb } from "../../services/chargerPersistence.service.js";
 import { ocppEvents } from "../ocppEvents.js";
 import prisma from "../../config/db.js";
@@ -33,6 +33,9 @@ import prisma from "../../config/db.js";
 // Default heartbeat interval (seconds)
 const HEARTBEAT_INTERVAL = 300; // 5 minutes
 
+// Default connector count if we don't know from DB
+const DEFAULT_NUM_CONNECTORS = 2;
+
 export default async function bootNotification(ws, messageId, chargerId, payload) {
   const {
     chargePointVendor,
@@ -54,8 +57,11 @@ export default async function bootNotification(ws, messageId, chargerId, payload
     chargePointSerialNumber || chargeBoxSerialNumber
   );
 
-  // Update charger state
-  updateChargerState(chargerId, {
+  // Determine how many connectors this charger has
+  const numConnectors = await getConnectorCount(chargerId);
+
+  // Initialize runtime state for ALL connectors
+  const chargerMetadata = {
     vendor: chargePointVendor,
     model: chargePointModel,
     serialNumber: chargePointSerialNumber || chargeBoxSerialNumber,
@@ -64,11 +70,18 @@ export default async function bootNotification(ws, messageId, chargerId, payload
     imsi,
     meterType,
     meterSerialNumber,
-    status: "Available",
-    connectionStatus: "Connected",
-    lastHeartbeat: new Date(),
-    lastBoot: new Date(),
-  });
+  };
+
+  for (let connId = 1; connId <= numConnectors; connId++) {
+    await updateConnectorState(chargerId, connId, {
+      ...chargerMetadata,
+      status: "Available",
+      connectionStatus: "Connected",
+      lastHeartbeat: new Date(),
+    });
+  }
+
+  console.log(`[BOOT] ${chargerId}: Initialized ${numConnectors} connector(s)`);
 
   // Sync to database
   await syncChargerToDb(chargerId);
@@ -91,6 +104,21 @@ export default async function bootNotification(ws, messageId, chargerId, payload
     currentTime: new Date().toISOString(),
     interval: HEARTBEAT_INTERVAL,
   });
+}
+
+/**
+ * Get the number of connectors for a charger.
+ * Reads from existing Connector rows in DB, falls back to DEFAULT_NUM_CONNECTORS.
+ */
+async function getConnectorCount(chargerId) {
+  try {
+    const count = await prisma.connector.count({
+      where: { chargerId },
+    });
+    return count > 0 ? count : DEFAULT_NUM_CONNECTORS;
+  } catch (error) {
+    return DEFAULT_NUM_CONNECTORS;
+  }
 }
 
 /**

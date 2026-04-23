@@ -1,17 +1,22 @@
 import prisma from "../config/db.js";
-import chargerStore from "./chargerStore.service.js";
+import { getAllConnectorStates } from "./chargerStore.service.js";
 
 export const syncChargerToDb = async (chargerId) => {
-  const state = chargerStore.get(chargerId);
-  if (!state) return;
+  // Get all connector states for this charger
+  const connMap = await getAllConnectorStates(chargerId);
+  if (!connMap || connMap.size === 0) return;
+
+  // Use first connector state for charger-level fields
+  const firstState = connMap.values().next().value;
+  if (!firstState) return;
 
   const normalizedStatus =
-    typeof state.status === "string"
-      ? state.status.toUpperCase()
-      : state.status;
+    typeof firstState.status === "string"
+      ? firstState.status.toUpperCase()
+      : firstState.status;
 
   // In-memory store uses "connectionStatus", DB uses "connectionState"
-  const rawConnection = state.connectionStatus || state.connectionState || "DISCONNECTED";
+  const rawConnection = firstState.connectionStatus || firstState.connectionState || "DISCONNECTED";
   const normalizedConnectionState =
     typeof rawConnection === "string"
       ? rawConnection.toUpperCase()
@@ -22,17 +27,17 @@ export const syncChargerToDb = async (chargerId) => {
     update: {
       status: normalizedStatus,
       connectionState: normalizedConnectionState,
-      lastHeartbeat: state.lastHeartbeat,
+      lastHeartbeat: firstState.lastHeartbeat,
       lastSeen: new Date(),
-      totalEnergyWh: state.meterWh,
+      totalEnergyWh: firstState.meterWh,
     },
     create: {
       id: chargerId,
       status: normalizedStatus,
       connectionState: normalizedConnectionState,
-      lastHeartbeat: state.lastHeartbeat,
+      lastHeartbeat: firstState.lastHeartbeat,
       lastSeen: new Date(),
-      totalEnergyWh: state.meterWh,
+      totalEnergyWh: firstState.meterWh,
     },
   });
 };

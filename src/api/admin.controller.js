@@ -1145,32 +1145,38 @@ export async function getChargerQR(req, res) {
 export async function adminRemoteStart(req, res) {
   try {
     const { chargerId } = req.params;
-    const { connectorId } = req.body;
+    const { connectorId = 1 } = req.body;
 
-    // Verify charger state to prevent duplicate start commands
-    const memState = chargersStore.get(chargerId);
-    if (memState?.status === "Charging" || memState?.status === "Preparing") {
-      return res.status(400).json({ success: false, error: "Charger is already busy" });
+    // Check per-connector state (not whole charger)
+    const { getConnectorState } = await import("../services/chargerStore.service.js");
+    const connState = await getConnectorState(chargerId, connectorId);
+    if (connState?.status === "Charging" || connState?.status === "CHARGING" || connState?.status === "Preparing" || connState?.status === "PREPARING") {
+      return res.status(400).json({ success: false, error: `Connector ${connectorId} is already busy (${connState.status})` });
     }
 
-    // Check database for active sessions
-    const activeSession = await prisma.chargingSession.findFirst({
-      where: { chargerId, endedAt: null },
+    // Check database for active session on THIS connector
+    const connector = await prisma.connector.findUnique({
+      where: { chargerId_connectorId: { chargerId, connectorId } },
     });
-    if (activeSession) {
-      return res.status(400).json({ success: false, error: "Charger already has an active session" });
+    if (connector) {
+      const activeSession = await prisma.chargingSession.findFirst({
+        where: { chargerId, connectorId: connector.id, endedAt: null },
+      });
+      if (activeSession) {
+        return res.status(400).json({ success: false, error: `Connector ${connectorId} already has an active session` });
+      }
     }
 
     const result = await remoteStartTransaction(chargerId, {
       idTag: "ADMIN_DEBUG",
-      connectorId: connectorId || 1,
+      connectorId,
     });
 
     res.json({
       success: result.success,
       data: result,
       message: result.success
-        ? "Remote start sent successfully"
+        ? `Remote start sent for connector ${connectorId}`
         : `Remote start failed: ${result.error || result.status}`,
     });
   } catch (error) {
@@ -1186,8 +1192,23 @@ export async function adminRemoteStart(req, res) {
 export async function adminRemoteStop(req, res) {
   try {
     const { chargerId } = req.params;
+    const { connectorId } = req.body || {};
 
-    // Find the active session on this charger
+    if (connectorId) {
+      // Stop a specific connector
+      const { stopChargingAtConnector } = await import("../ocpp/commands/remoteStopTransaction.js");
+      const result = await stopChargingAtConnector(chargerId, connectorId);
+
+      return res.json({
+        success: result.success,
+        data: result,
+        message: result.success
+          ? `Remote stop sent for connector ${connectorId}`
+          : `Remote stop failed: ${result.error || result.status}`,
+      });
+    }
+
+    // Find first active session on any connector
     const activeSession = await prisma.chargingSession.findFirst({
       where: {
         chargerId,
@@ -1235,8 +1256,8 @@ export async function getActiveSessionForCharger(req, res) {
   try {
     const { chargerId } = req.params;
 
-    // 1) Active session from DB
-    const activeSession = await prisma.chargingSession.findFirst({
+    // 1) ALL active sessions on this charger (could be multiple for multi-connector)
+    const activeSessions = await prisma.chargingSession.findMany({
       where: {
         chargerId,
         endedAt: null,
@@ -1249,34 +1270,45 @@ export async function getActiveSessionForCharger(req, res) {
           },
         },
         user: { select: { id: true, name: true, email: true } },
+        connector: { select: { connectorId: true } },
       },
       orderBy: { startedAt: "desc" },
     });
 
-    // 2) In-memory charger status (same source the Flutter app polls via /chargers/:id/status)
-    const memState = chargersStore.get(chargerId);
+    // 2) Per-connector live status
+    const { getAllConnectorStates } = await import("../services/chargerStore.service.js");
+    const connMap = await getAllConnectorStates(chargerId);
     const online = isChargerOnline(chargerId);
-    const liveStatus = {
-      online,
-      status: memState?.status || null,
-      transactionId: memState?.transactionId ?? memState?.ocppTransactionId ?? null,
-      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh ?? null,
-      meterStart: memState?.meterStart ?? memState?.meterStartWh ?? null,
-      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
-        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
-        : null,
-      lastHeartbeat: memState?.lastHeartbeat || null,
-      lastMeterTime: memState?.lastMeterTime || null,
-    };
 
-    // 3) Live session from chargingSessionLive table (detailed meter readings: power, voltage, current, soc)
-    let liveSession = null;
-    if (activeSession) {
+    // Build per-connector status array
+    const connectorStatuses = [];
+    if (connMap && connMap.size > 0) {
+      for (const [connId, state] of connMap) {
+        const meterStart = state?.meterStartWh;
+        const lastMeter = state?.lastMeterValueWh;
+        connectorStatuses.push({
+          connectorId: connId,
+          status: state?.status || null,
+          transactionId: state?.transactionId ?? state?.ocppTransactionId ?? null,
+          meterWh: lastMeter ?? null,
+          meterStart: meterStart ?? null,
+          energyUsedWh: (meterStart != null && lastMeter != null)
+            ? Math.max(0, lastMeter - meterStart)
+            : null,
+          lastMeterTime: state?.lastMeterTime || null,
+        });
+      }
+    }
+
+    // 3) Live session data for each active session
+    const sessionsWithLive = await Promise.all(activeSessions.map(async (session) => {
       const liveMeter = await prisma.chargingSessionLive.findUnique({
-        where: { sessionId: activeSession.id },
+        where: { sessionId: session.id },
       });
-      if (liveMeter) {
-        liveSession = {
+      return {
+        ...session,
+        connectorId: session.connector?.connectorId ?? null,
+        liveSession: liveMeter ? {
           energyWh: liveMeter.energyWh,
           powerW: liveMeter.powerW,
           voltageV: liveMeter.voltageV,
@@ -1284,9 +1316,9 @@ export async function getActiveSessionForCharger(req, res) {
           socPercent: liveMeter.socPercent,
           temperatureC: liveMeter.temperatureC,
           lastUpdated: liveMeter.lastMeterAt,
-        };
-      }
-    }
+        } : null,
+      };
+    }));
 
     // 4) Recent completed sessions
     const recentSessions = await prisma.chargingSession.findMany({
@@ -1296,6 +1328,7 @@ export async function getActiveSessionForCharger(req, res) {
       },
       include: {
         user: { select: { id: true, name: true, email: true } },
+        connector: { select: { connectorId: true } },
       },
       orderBy: { startedAt: "desc" },
       take: 10,
@@ -1303,19 +1336,29 @@ export async function getActiveSessionForCharger(req, res) {
 
     // 5) Get pricing for cost calculation
     let energyRatePerKwh = 30; // default fallback
-    if (activeSession?.charger?.station?.pricing) {
-      const pricing = activeSession.charger.station.pricing;
+    if (activeSessions[0]?.charger?.station?.pricing) {
+      const pricing = activeSessions[0].charger.station.pricing;
       if (pricing.perKwh) energyRatePerKwh = parseFloat(pricing.perKwh);
     }
+
+    // Backward compat: activeSession is the first (or null)
+    const activeSession = sessionsWithLive[0] || null;
+    const liveStatus = connectorStatuses[0] ? { online, ...connectorStatuses[0] } : { online };
+    const liveSession = activeSession?.liveSession || null;
 
     res.json({
       success: true,
       data: {
+        // Backward-compat fields
         activeSession,
         liveStatus,
         liveSession,
         energyRatePerKwh,
         recentSessions,
+
+        // NEW: Multi-connector data
+        activeSessions: sessionsWithLive,
+        connectorStatuses,
       },
     });
   } catch (error) {

@@ -52,6 +52,7 @@ model Wallet {
   id            String    @id @default(uuid())
   userId        String    @unique
   balance       Decimal   @default(0) @db.Decimal(12, 2)
+  lockedBalance Decimal   @default(0) @db.Decimal(12, 2)
   currency      String    @default("LKR")
   
   createdAt     DateTime  @default(now())
@@ -217,7 +218,7 @@ model Charger {
   connectors      Connector[]
   sessions        ChargingSession[]
 
-  runtimeState    ChargerRuntimeState?
+  runtimeStates   ChargerRuntimeState[]
 
   @@index([stationId])
   @@index([serialNumber])
@@ -302,6 +303,7 @@ model ChargingSession {
   
   // Billing
   pricePerKwh     Decimal?  @db.Decimal(10, 2)
+  presetAmount    Decimal?  @db.Decimal(12, 2)
   totalCost       Decimal   @default(0) @db.Decimal(12, 2)
   ownerEarning    Decimal   @default(0) @db.Decimal(12, 2)
   commission      Decimal   @default(0) @db.Decimal(12, 2)
@@ -667,9 +669,11 @@ model ChargingSessionLive {
   @@index([transactionId])
 }
 
-// Runtime state of charger and connector for quick access without joining sessions
+// Runtime state per connector for quick access without joining sessions
+// Each charger+connector pair has its own independent runtime row
 model ChargerRuntimeState {
-  chargerId             String   @id
+  id                    String   @id @default(uuid())
+  chargerId             String
   connectorId           Int
   status                ConnectorStatus
 
@@ -679,7 +683,7 @@ model ChargerRuntimeState {
   lastStatusUpdate      DateTime?
   bookingId             String?
 
-  internalTransactionId Int?  @unique
+  internalTransactionId Int?
   ocppTransactionId     Int?
   idTag                 String?
   userId                String?
@@ -694,6 +698,7 @@ model ChargerRuntimeState {
 
   charger               Charger   @relation(fields: [chargerId], references: [id])
 
+  @@unique([chargerId, connectorId])
   @@index([chargerId])
   @@index([ocppTransactionId])
   @@index([status])
