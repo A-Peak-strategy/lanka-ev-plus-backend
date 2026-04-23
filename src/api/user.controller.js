@@ -239,6 +239,7 @@ export async function getActiveSessions(req, res) {
     const formatted = sessions.map((s) => ({
         id: s.id,
         transactionId: s.transactionId,
+        connectorId: s.connector?.connectorId ?? 1,
         status: s.status,
         energyUsedWh: s.energyUsedWh,
         energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),

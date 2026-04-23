@@ -388,6 +388,11 @@ export async function getActiveSessionsForUser(userId) {
           },
         },
       },
+      connector: {
+        select: {
+          connectorId: true,
+        },
+      },
       live: true,
     },
     orderBy: { startedAt: "desc" },
