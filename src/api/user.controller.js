@@ -246,6 +246,7 @@ export async function getActiveSessions(req, res) {
         pricePerKwh: s.pricePerKwh?.toString() || "0.00",
         startedAt: s.startedAt,
         endedAt: s.endedAt,
+        connectorId: s.connector?.connectorId || 1,
         charger: s.charger
             ? {
                 id: s.charger.id,

@@ -227,7 +227,7 @@ model Charger {
   connectors      Connector[]
   sessions        ChargingSession[]
 
-  runtimeState    ChargerRuntimeState?
+  runtimeState    ChargerRuntimeState[]
 
   @@index([stationId])
   @@index([serialNumber])
@@ -680,7 +680,7 @@ model ChargingSessionLive {
 
 // Runtime state of charger and connector for quick access without joining sessions
 model ChargerRuntimeState {
-  chargerId             String   @id
+  chargerId             String
   connectorId           Int
   status                ConnectorStatus
 
@@ -705,6 +705,7 @@ model ChargerRuntimeState {
 
   charger               Charger   @relation(fields: [chargerId], references: [id])
 
+  @@id([chargerId, connectorId])
   @@index([chargerId])
   @@index([ocppTransactionId])
   @@index([status])

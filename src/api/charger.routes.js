@@ -22,8 +22,8 @@ router.get("/lookup", verifyToken, requireActiveUser, lookupChargerByCode);
 // GET /api/chargers/:chargerId - Get single charger (public)
 router.get("/:chargerId", optionalAuth, getCharger);
 
-// GET /api/chargers/:chargerId/status - Get charger status (public)
-router.get("/:chargerId/status", getChargerStatus);
+// GET /api/chargers/:chargerId/status - Get charger status (public, optional auth for session info)
+router.get("/:chargerId/status", optionalAuth, getChargerStatus);
 
 // GET /api/chargers/:chargerId/sessions - Get charger sessions (requires auth)
 router.get("/:chargerId/sessions", verifyToken, requireActiveUser, getChargerSessions);

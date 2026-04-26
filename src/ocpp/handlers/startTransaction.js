@@ -70,8 +70,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   // Prefer pendingUserId stored in the in-memory chargersStore by startChargingForUser.
   // We read from the Map directly because getChargerState() may return DB data
   // where pendingUserId was stripped by the RUNTIME_ALLOWED whitelist.
-  const { chargersStore } = await import("../../services/chargerStore.service.js");
-  const cachedState = chargersStore.get(chargerId);
+  const { chargersStore, getChargerKey } = await import("../../services/chargerStore.service.js");
+  const cachedState = chargersStore.get(getChargerKey(chargerId, connectorId));
   const pendingUserId = cachedState?.pendingUserId;
   const pendingPresetAmount = cachedState?.pendingPresetAmount;
   const userId = pendingUserId || await resolveUserFromIdTag(idTag);

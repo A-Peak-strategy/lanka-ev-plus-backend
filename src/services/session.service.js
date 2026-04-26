@@ -274,17 +274,38 @@ export async function handleSessionFault(data) {
 }
 
 /**
- * Get active session for a charger
+ * Get active session for a charger or specific connector
  * 
  * @param {string} chargerId
+ * @param {number} [connectorId] - Optional OCPP connector ID
  * @returns {Promise<object|null>}
  */
-export async function getActiveSession(chargerId) {
+export async function getActiveSession(chargerId, connectorId) {
+  const where = {
+    chargerId,
+    endedAt: null,
+  };
+
+  if (connectorId) {
+    const connector = await prisma.connector.findUnique({
+      where: {
+        chargerId_connectorId: {
+          chargerId,
+          connectorId: parseInt(connectorId),
+        },
+      },
+    });
+
+    if (connector) {
+      where.connectorId = connector.id;
+    } else {
+      // If connectorId specified but not found, return null
+      return null;
+    }
+  }
+
   return prisma.chargingSession.findFirst({
-    where: {
-      chargerId,
-      endedAt: null,
-    },
+    where,
     orderBy: { startedAt: "desc" },
   });
 }
@@ -354,6 +375,7 @@ export async function getActiveSessionsForUser(userId) {
           },
         },
       },
+      connector: true,
       live: true,
     },
     orderBy: { startedAt: "desc" },

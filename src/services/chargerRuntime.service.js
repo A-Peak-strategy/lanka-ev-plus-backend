@@ -52,13 +52,9 @@ export async function updateChargerStateAPI(chargerId, update) {
         ...update,
 
         // map legacy fields → runtime fields
-        internalTransactionId:
-            update.internalTransactionId != null
-                ? update.internalTransactionId
-                : null,
-
-        meterStartWh: update.meterStartWh ?? update.meterStart ?? null,
-        lastMeterValueWh: update.lastMeterValueWh ?? update.lastMeterValue ?? null,
+        internalTransactionId: update.internalTransactionId,
+        meterStartWh: update.meterStartWh ?? update.meterStart,
+        lastMeterValueWh: update.lastMeterValueWh ?? update.lastMeterValue,
 
         // normalize enums
         status: update.status ? normStatus(update.status) : undefined,
@@ -75,6 +71,8 @@ export async function updateChargerStateAPI(chargerId, update) {
     // ---- 2) charger metadata update (optional but recommended) ----
     const chargerData = pick(update, CHARGER_ALLOWED);
 
+    const connectorId = parseInt(runtimeData.connectorId ?? 1);
+
     // run both in a transaction (safe)
     return prisma.$transaction(async (tx) => {
         // update charger metadata if provided
@@ -87,11 +85,16 @@ export async function updateChargerStateAPI(chargerId, update) {
 
         // upsert runtime state always
         const row = await tx.chargerRuntimeState.upsert({
-            where: { chargerId },
+            where: {
+                chargerId_connectorId: {
+                    chargerId,
+                    connectorId,
+                },
+            },
             update: runtimeData,
             create: {
                 chargerId,
-                connectorId: runtimeData.connectorId ?? 1,
+                connectorId,
                 status: runtimeData.status ?? "AVAILABLE",
                 ...runtimeData,
             },
@@ -102,19 +105,29 @@ export async function updateChargerStateAPI(chargerId, update) {
 }
 
 
-export async function getChargerStateAPI(chargerId) {
+export async function getChargerStateAPI(chargerId, connectorId = 1) {
     return prisma.chargerRuntimeState.findUnique({
-        where: { chargerId },
+        where: {
+            chargerId_connectorId: {
+                chargerId,
+                connectorId: parseInt(connectorId),
+            },
+        },
     });
 }
 
-export async function updateMeterValueAPI(chargerId, meterWh) {
+export async function updateMeterValueAPI(chargerId, meterWh, connectorId = 1) {
     return prisma.chargerRuntimeState.upsert({
-        where: { chargerId },
+        where: {
+            chargerId_connectorId: {
+                chargerId,
+                connectorId: parseInt(connectorId),
+            },
+        },
         update: { lastMeterValueWh: meterWh },
         create: {
             chargerId,
-            connectorId: 1,
+            connectorId: parseInt(connectorId),
             status: "AVAILABLE",
             lastMeterValueWh: meterWh,
         },

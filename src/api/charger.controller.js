@@ -1,10 +1,11 @@
-import { chargersStore } from "../services/chargerStore.service.js";
+import { chargersStore, getChargerKey } from "../services/chargerStore.service.js";
 import { isChargerOnline, getConnectedChargerIds, getChargerMetadata } from "../ocpp/ocppServer.js";
 import { startChargingForUser } from "../ocpp/commands/remoteStartTransaction.js";
-import { stopChargingAtCharger } from "../ocpp/commands/remoteStopTransaction.js";
+import { stopChargingAtCharger, remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
 import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
+import sessionService from "../services/session.service.js";
 
 /**
  * Get all chargers (from memory and database)
@@ -35,8 +36,28 @@ export const getAllChargers = async (req, res, next) => {
 
     // Merge with in-memory state
     const chargers = dbChargers.map((charger) => {
-      const memState = chargersStore.get(charger.id);
       const online = isChargerOnline(charger.id);
+      
+      // Update connector statuses from memory
+      const connectors = charger.connectors.map(conn => {
+        const memState = chargersStore.get(getChargerKey(charger.id, conn.connectorId));
+        return {
+          ...conn,
+          status: memState?.status || conn.status,
+          activeTransaction: memState?.transactionId || null,
+        };
+      });
+
+      // Charger-wide status: AVAILABLE if any connector is available
+      const hasAvailable = connectors.some(c => c.status === "AVAILABLE");
+      const allFaulted = connectors.length > 0 && connectors.every(c => c.status === "FAULTED");
+      
+      let chargerStatus = charger.status;
+      if (connectors.length > 0) {
+        if (hasAvailable) chargerStatus = "AVAILABLE";
+        else if (allFaulted) chargerStatus = "FAULTED";
+        else chargerStatus = connectors[0].status; // Fallback to first connector
+      }
 
       return {
         id: charger.id,
@@ -44,15 +65,12 @@ export const getAllChargers = async (req, res, next) => {
         vendor: charger.vendor,
         model: charger.model,
         firmwareVersion: charger.firmwareVersion,
-        status: memState?.status || charger.status,
+        status: chargerStatus,
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        lastHeartbeat: memState?.lastHeartbeat || charger.lastHeartbeat,
+        lastHeartbeat: charger.lastHeartbeat, // Ideally we'd get this from memory too
         lastSeen: charger.lastSeen,
         station: charger.station,
-        connectors: charger.connectors,
-        // Active transaction info
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
+        connectors: connectors,
       };
     });
 
@@ -95,20 +113,38 @@ export const getCharger = async (req, res, next) => {
       throw new NotFoundError("Charger", chargerId);
     }
 
-    const memState = chargersStore.get(chargerId);
     const online = isChargerOnline(chargerId);
-    const metadata = getChargerMetadata(chargerId);
+    // Update connector statuses from memory
+    const connectors = charger.connectors.map(conn => {
+      const memState = chargersStore.get(getChargerKey(charger.id, conn.connectorId));
+      return {
+        ...conn,
+        status: memState?.status || conn.status,
+        activeTransaction: memState?.transactionId || null,
+        currentMeterWh: memState?.lastMeterValueWh || null,
+      };
+    });
+
+    // Charger-wide status: AVAILABLE if any connector is AVAILABLE
+    const hasAvailable = connectors.some(c => c.status === "AVAILABLE");
+    const allFaulted = connectors.length > 0 && connectors.every(c => c.status === "FAULTED");
+    
+    let chargerStatus = charger.status;
+    if (connectors.length > 0) {
+      if (hasAvailable) chargerStatus = "AVAILABLE";
+      else if (allFaulted) chargerStatus = "FAULTED";
+      else chargerStatus = connectors[0].status;
+    }
 
     res.json({
       success: true,
       charger: {
         ...charger,
-        status: memState?.status || charger.status,
+        status: chargerStatus,
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
-        activeTransaction: memState?.transactionId || null,
-        currentMeterWh: memState?.lastMeterValue || null,
-        connectionMetadata: metadata,
+        connectors: connectors,
       },
+      online,
     });
   } catch (error) {
     next(error);
@@ -199,36 +235,72 @@ export const lookupChargerByCode = async (req, res, next) => {
  * 
  * GET /api/chargers/:chargerId/status
  */
-export const getChargerStatus = (req, res, next) => {
+export const getChargerStatus = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
 
     validateChargerId(chargerId);
 
-    const memState = chargersStore.get(chargerId);
+    const userId = req.user?.id;
+    const queryConnectorId = req.query.connectorId ? parseInt(req.query.connectorId) : null;
+    let connectorId = queryConnectorId || 1;
+    let memState = null;
+
+    if (userId || queryConnectorId) {
+      // If connectorId was explicitly requested, use it
+      if (queryConnectorId) {
+        memState = chargersStore.get(getChargerKey(chargerId, queryConnectorId));
+      }
+      
+      // If still no state and we have a user, try to find their active session
+      if (!memState && userId) {
+        const activeSessions = await sessionService.getActiveSessionsForUser(userId);
+        const session = activeSessions.find(s => s.chargerId === chargerId);
+        
+        if (session && session.connector) {
+          connectorId = session.connector.connectorId;
+          memState = chargersStore.get(getChargerKey(chargerId, connectorId));
+        }
+      }
+    }
+
+    // Get charger summary status from DB if no specific session state is found
+    const charger = await prisma.charger.findUnique({
+      where: { id: chargerId },
+      select: { status: true }
+    });
+    
     const online = isChargerOnline(chargerId);
 
-    if (!memState && !online) {
+    if (!memState && !online && !charger) {
       throw new NotFoundError("Charger", chargerId);
     }
 
-    // console.log("memState : ", JSON.stringify(memState,null,2));
+    // If no specific session state, use connector 1's state for metadata if available,
+    // but override the status with the charger's summary status
+    const defaultState = chargersStore.get(getChargerKey(chargerId, 1));
+    const responseState = memState || defaultState;
 
     res.json({
       success: true,
       chargerId,
       online,
-      status: memState?.status || "Unknown",
-      connectorId: memState?.connectorId,
-      transactionId: memState?.transactionId ?? memState?.ocppTransactionId,
+      // Use the specific connector status if the user is charging, 
+      // otherwise use the charger's summary status (e.g. "Available")
+      status: memState ? (memState.status || "Unknown") : (charger?.status || "Unknown"),
+      connectorId: memState?.connectorId || connectorId,
+      transactionId: memState?.ocppTransactionId || (typeof memState?.transactionId === 'number' ? memState.transactionId : null),
       ocppTransactionId: memState?.ocppTransactionId,
-      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh,
-      meterStart: memState?.meterStart ?? memState?.meterStartWh,
-      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
-        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
-        : null,
-      lastHeartbeat: memState?.lastHeartbeat,
-      lastMeterTime: memState?.lastMeterTime,
+      internalTransactionId: memState?.internalTransactionId,
+      meterWh: memState?.lastMeterValueWh,
+      meterStart: memState?.meterStartWh,
+      energyUsedWh: memState?.lastMeterValueWh && memState?.meterStartWh 
+        ? memState.lastMeterValueWh - memState.meterStartWh 
+        : 0,
+      sessionStartTime: memState?.sessionStartTime,
+      lastHeartbeat: responseState?.lastHeartbeat,
+      lastMeterTime: memState?.lastStatusUpdate,
+      userId: memState?.userId,
     });
   } catch (error) {
     next(error);
@@ -261,11 +333,11 @@ export const startCharging = async (req, res, next) => {
       throw new ChargerOfflineError(chargerId);
     }
 
-    // Check for existing active transaction
-    const memState = chargersStore.get(chargerId);
+    // Check for existing active transaction on this specific connector
+    const memState = chargersStore.get(getChargerKey(chargerId, validConnectorId));
     if (memState?.transactionId) {
       throw new ConflictError(
-        "Charger already has an active transaction",
+        `Connector ${validConnectorId} already has an active transaction`,
         "ACTIVE_TRANSACTION_EXISTS"
       );
     }
@@ -345,17 +417,33 @@ export const stopCharging = async (req, res, next) => {
       throw new ChargerOfflineError(chargerId);
     }
 
-    // Check for active transaction
-    const memState = chargersStore.get(chargerId);
-    if (!memState?.transactionId && !memState?.ocppTransactionId) {
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new ValidationError("userId is required to stop charging");
+    }
+
+    const { connectorId } = req.body;
+
+    // Find active session for this user
+    const activeSessions = await sessionService.getActiveSessionsForUser(userId);
+    let session;
+    
+    if (connectorId) {
+      session = activeSessions.find(s => s.chargerId === chargerId && s.connector?.connectorId === parseInt(connectorId));
+    } else {
+      session = activeSessions.find(s => s.chargerId === chargerId);
+    }
+
+    if (!session) {
       throw new ConflictError(
-        "No active transaction to stop",
+        "No active transaction found for this user on this charger",
         "NO_ACTIVE_TRANSACTION"
       );
     }
 
-    // Send RemoteStopTransaction
-    const result = await stopChargingAtCharger(chargerId);
+    // Send RemoteStopTransaction using the session's primary key (id)
+    // session.id is what we sent to the charger as transactionId during StartTransaction
+    const result = await remoteStopTransaction(chargerId, session.id);
     console.log("Stop Charging result : ", JSON.stringify(result, null, 2));
 
     if (result.success) {
