@@ -149,6 +149,11 @@ export async function getSessionHistory(req, res) {
                         },
                     },
                 },
+                connector: {
+                    select: {
+                        connectorId: true,
+                    },
+                },
             },
             orderBy: { startedAt: "desc" },
             take: limit,
@@ -168,6 +173,8 @@ export async function getSessionHistory(req, res) {
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         stopReason: s.stopReason,
+        connectorId: s.connector?.connectorId || 1,
+        chargerId: s.charger?.id,
         charger: s.charger
             ? {
                 id: s.charger.id,

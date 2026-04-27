@@ -155,9 +155,9 @@ async function processStop(ws, messageId, chargerId, activeTransactionId, connec
     ).catch(err => console.error(`[STOP] Lock release error:`, err.message));
 
     // Reset charger state for the specific connector
+    // Note: status is NOT forced to Available here; we wait for the charger's StatusNotification
     updateChargerState(chargerId, {
       connectorId,
-      status: "Available",
       transactionId: null,
       ocppTransactionId: null,
       meterStart: null,
