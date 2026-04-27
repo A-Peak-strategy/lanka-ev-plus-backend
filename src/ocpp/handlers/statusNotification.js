@@ -69,7 +69,7 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
   }
 
   // Update session status based on OCPP status transitions
-  const activeSession = await sessionService.getActiveSession(chargerId);
+  const activeSession = await sessionService.getActiveSession(chargerId, connectorId);
   if (activeSession) {
     const statusMapping = {
       [ChargePointStatus.CHARGING]: "CHARGING",
@@ -103,7 +103,7 @@ async function handleFault(chargerId, connectorId, status, errorCode, info) {
   console.warn(`⚠️ [FAULT] ${chargerId}#${connectorId}: ${errorCode} - ${info || 'No details'}`);
 
   // Check for active session on this connector
-  const session = await sessionService.getActiveSession(chargerId);
+  const session = await sessionService.getActiveSession(chargerId, connectorId);
 
   if (session) {
     // Emit fault event for billing to handle (partial refund, etc.)
@@ -134,39 +134,56 @@ async function updateConnectorStatus(chargerId, connectorId, status, errorCode) 
       return;
     }
 
-    // Update or create connector
-    await prisma.connector.upsert({
-      where: {
-        chargerId_connectorId: {
+    // Run in transaction to ensure consistency
+    await prisma.$transaction(async (tx) => {
+      // Update or create connector
+      await tx.connector.upsert({
+        where: {
+          chargerId_connectorId: {
+            chargerId,
+            connectorId,
+          },
+        },
+        create: {
           chargerId,
           connectorId,
+          status: mapConnectorStatus(status),
+          errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
         },
-      },
-      create: {
-        chargerId,
-        connectorId,
-        status: mapConnectorStatus(status),
-        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
-      },
-      update: {
-        status: mapConnectorStatus(status),
-        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
-      },
-    });
+        update: {
+          status: mapConnectorStatus(status),
+          errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
+        },
+      });
 
-    // Also update charger status based on connector
-    await prisma.charger.updateMany({
-      where: { id: chargerId },
-      data: {
-        status: mapStatus(status),
-        lastSeen: new Date(),
-      },
+      // Also update charger status based on all its connectors
+      // Summary logic: AVAILABLE if any connector is AVAILABLE, otherwise if any is CHARGING, it's CHARGING
+      const allConnectors = await tx.connector.findMany({
+        where: { chargerId },
+      });
+
+      const hasAvailable = allConnectors.some(c => c.status === "AVAILABLE");
+      const hasCharging = allConnectors.some(c => c.status === "CHARGING" || c.status === "OCCUPIED");
+      const allFaulted = allConnectors.length > 0 && allConnectors.every(c => c.status === "FAULTED");
+
+      let summaryStatus = "UNAVAILABLE";
+      if (hasAvailable) summaryStatus = "AVAILABLE";
+      else if (hasCharging) summaryStatus = "CHARGING";
+      else if (allFaulted) summaryStatus = "FAULTED";
+      else if (allConnectors.length > 0) summaryStatus = allConnectors[0].status;
+
+      await tx.charger.update({
+        where: { id: chargerId },
+        data: {
+          status: summaryStatus,
+          lastSeen: new Date(),
+        },
+      });
     });
   } catch (error) {
     console.error("Error updating connector status:", error);
   }
 }
-
 /**
  * Map OCPP status to Prisma enum
  */

@@ -43,28 +43,38 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
 
   console.log(`[STOP] ${chargerId}: ocppTxId=${transactionId}, meter=${meterStop}Wh, reason=${reason || 'Normal'}`);
 
-  // Resolve OCPP integer transactionId to internal string transactionId
-  // Priority: charger state (fastest) > DB lookup by session.id
-  const chargerState = await getChargerState(chargerId);
-  let activeTransactionId = chargerState?.transactionId;
+  // Resolve OCPP integer transactionId to internal string transactionId and connector
+  const session = await prisma.chargingSession.findUnique({
+    where: { id: parseInt(transactionId) },
+    include: { connector: true }
+  });
 
-  if (!activeTransactionId && transactionId) {
-    // Charger state might have been lost (restart, etc.)
-    // Look up session by autoincrement ID (the integer we sent to charger)
-    const session = await prisma.chargingSession.findUnique({
-      where: { id: parseInt(transactionId) },
-    });
-    if (session) {
-      activeTransactionId = session.transactionId;
-      console.log(`[STOP] Resolved ocppTxId ${transactionId} → internal ${activeTransactionId}`);
+  if (!session) {
+    console.warn(`[STOP] No session found in DB for ocppTxId ${transactionId}`);
+    // Fallback: try charger state (limited accuracy for dual-connector)
+    const chargerState = await getChargerState(chargerId);
+    if (chargerState?.ocppTransactionId === parseInt(transactionId)) {
+       const activeTransactionId = chargerState.transactionId;
+       const connectorId = chargerState.connectorId || 1;
+       return processStop(ws, messageId, chargerId, activeTransactionId, connectorId, payload);
     }
-  }
-
-  if (!activeTransactionId) {
-    console.warn(`[STOP] No active transaction found for ${chargerId}`);
+    
     sendCallResult(ws, messageId, {});
     return;
   }
+
+  const activeTransactionId = session.transactionId;
+  const connectorId = session.connector?.connectorId || 1;
+
+  await processStop(ws, messageId, chargerId, activeTransactionId, connectorId, payload);
+}
+
+/**
+ * Shared logic for processing the stop transaction
+ */
+async function processStop(ws, messageId, chargerId, activeTransactionId, connectorId, payload) {
+  const { idTag, meterStop, timestamp, reason, transactionData } = payload;
+  const stopTime = timestamp ? new Date(timestamp) : new Date();
 
   try {
     // Process any remaining meter values from transactionData
@@ -85,7 +95,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     }
 
     // Finalize session in database
-    const { session, alreadyFinalized, notFound } = await sessionService.finalizeSession({
+    const { alreadyFinalized, notFound } = await sessionService.finalizeSession({
       transactionId: activeTransactionId,
       meterStop,
       timestamp: stopTime,
@@ -128,6 +138,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     // Emit event
     ocppEvents.emitSessionStopped({
       chargerId,
+      connectorId,
       transactionId: activeTransactionId,
       meterStop,
       reason,
@@ -137,17 +148,16 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     });
 
     // Release connector lock
-    if (chargerState?.connectorId) {
-      await connectorLockService.markChargingComplete(
-        chargerId,
-        chargerState.connectorId,
-        activeTransactionId
-      ).catch(err => console.error(`[STOP] Lock release error:`, err.message));
-    }
+    await connectorLockService.markChargingComplete(
+      chargerId,
+      connectorId,
+      activeTransactionId
+    ).catch(err => console.error(`[STOP] Lock release error:`, err.message));
 
-    // Reset charger state
+    // Reset charger state for the specific connector
+    // Note: status is NOT forced to Available here; we wait for the charger's StatusNotification
     updateChargerState(chargerId, {
-      status: "Available",
+      connectorId,
       transactionId: null,
       ocppTransactionId: null,
       meterStart: null,
@@ -173,6 +183,7 @@ export default async function stopTransaction(ws, messageId, chargerId, payload)
     
     // Still try to reset charger state to prevent stuck state
     updateChargerState(chargerId, {
+      connectorId,
       status: "Available",
       transactionId: null,
     });
