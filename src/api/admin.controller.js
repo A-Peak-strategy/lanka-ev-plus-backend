@@ -926,7 +926,7 @@ export async function updateStation(req, res) {
     const { stationId } = req.params;
     const adminId = req.user?.id || "system";
 
-    const allowedFields = ["name", "address", "lat", "lng", "pricingId", "isActive", "bookingEnabled"];
+    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled"];
     const data = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) {
@@ -1007,72 +1007,6 @@ export async function getUserWallet(req, res) {
   }
 }
 
-export default {
-  // Users
-  createOwner,
-  getUsers,
-  getUserById,
-  getUserWallet,
-  updateUserStatus,
-  updateUserRole,
-
-  // Chargers
-  registerCharger,
-  getChargers,
-  getChargerById,
-  assignChargerToStation,
-
-  // Stations
-  createStation,
-  getStations,
-  getStationById,
-  updateStation,
-  assignStationToOwner,
-
-  // Pricing
-  createPricing,
-  updatePricing,
-  getPricings,
-  assignPricingToStation,
-
-  // Sessions
-  getSessions,
-  getSessionById,
-  getSessionStats,
-  forceStopSession,
-
-  // Dashboard
-  getDashboardMetrics,
-
-  // OCPP Logs
-  getOcppLogs,
-
-  // Settlements
-  getSettlements,
-  getSettlementById,
-  generateSettlements,
-  createSettlement,
-  markSettlementPaid,
-  markSettlementFailed,
-  getPendingSettlementsSummary,
-  getOwnerEarnings,
-  getOwnerEarningsByStation,
-  recordOwnerPayment,
-
-  // Audit
-  getAuditLogs,
-
-  // QR Codes
-  generateChargerQR,
-  regenerateChargerQR,
-  getChargerQR,
-
-  // Debug
-  adminRemoteStart,
-  adminRemoteStop,
-  getActiveSessionForCharger,
-  adminSetWalletBalance,
-};
 
 // ============================================
 // QR CODE HANDLERS
@@ -1415,5 +1349,172 @@ export async function adminSetWalletBalance(req, res) {
   } catch (error) {
     console.error("Admin set wallet balance error:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Delete charger
+ */
+export async function deleteCharger(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const deleted = await adminService.deleteCharger(chargerId, adminId);
+    res.json({ success: true, data: deleted, message: 'Charger deleted successfully' });
+  } catch (error) {
+    console.error('Delete charger error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Update charger
+ */
+export async function updateCharger(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const data = req.body;
+    const adminService = await import('../services/admin.service.js');
+    const updated = await adminService.updateCharger(chargerId, data, adminId);
+    res.json({ success: true, data: updated, message: 'Charger updated successfully' });
+  } catch (error) {
+    console.error('Update charger error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Add a connector to a charger
+ */
+export async function addConnector(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const connector = await adminService.addConnector(chargerId, adminId);
+    res.json({ success: true, data: connector, message: 'Connector added successfully' });
+  } catch (error) {
+    console.error('Add connector error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Remove a connector from a charger
+ */
+export async function removeConnector(req, res) {
+  try {
+    const { chargerId, connectorId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const connector = await adminService.removeConnector(chargerId, connectorId, adminId);
+    res.json({ success: true, data: connector, message: 'Connector removed successfully' });
+  } catch (error) {
+    console.error('Remove connector error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Delete station
+ */
+export async function deleteStation(req, res) {
+  try {
+    const { stationId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const deleted = await adminService.deleteStation(stationId, adminId);
+    res.json({ success: true, data: deleted, message: 'Station deleted successfully' });
+  } catch (error) {
+    console.error('Delete station error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Unassign charger
+ */
+export async function unassignCharger(req, res) {
+  try {
+    const { chargerId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const updated = await adminService.unassignCharger(chargerId, adminId);
+    res.json({ success: true, data: updated, message: 'Charger unassigned successfully' });
+  } catch (error) {
+    console.error('Unassign charger error:', error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export default {
+  createOwner,
+  getUsers,
+  updateUserStatus,
+  updateUserRole,
+  registerCharger,
+  getChargers,
+  getChargerById,
+  assignChargerToStation,
+  createStation,
+  getStations,
+  assignStationToOwner,
+  createPricing,
+  updatePricing,
+  getPricings,
+  assignPricingToStation,
+  getSessions,
+  getSessionStats,
+  getOcppLogs,
+  getSettlements,
+  getSettlementById,
+  generateSettlements,
+  createSettlement,
+  markSettlementPaid,
+  markSettlementFailed,
+  getPendingSettlementsSummary,
+  getOwnerEarnings,
+  getOwnerEarningsByStation,
+  recordOwnerPayment,
+  getAuditLogs,
+  getDashboardMetrics,
+  getSessionById,
+  forceStopSession,
+  getStationById,
+  updateStation,
+  getUserById,
+  getUserWallet,
+  generateChargerQR,
+  regenerateChargerQR,
+  getChargerQR,
+  adminRemoteStart,
+  adminRemoteStop,
+  getActiveSessionForCharger,
+  adminSetWalletBalance,
+  deleteCharger,
+  updateCharger,
+  addConnector,
+  removeConnector,
+  deleteStation,
+  unassignCharger,
+  deletePricing,
+};
+
+/**
+ * Delete pricing plan
+ * DELETE /api/admin/pricing/:pricingId
+ */
+export async function deletePricing(req, res) {
+  try {
+    const { pricingId } = req.params;
+    const adminId = req.user?.id || 'system';
+    const adminService = await import('../services/admin.service.js');
+    const deleted = await adminService.deletePricing(pricingId, adminId);
+    res.json({ success: true, data: deleted, message: 'Pricing plan deleted successfully' });
+  } catch (error) {
+    console.error('Delete pricing error:', error);
+    res.status(400).json({ success: false, error: error.message });
   }
 }
