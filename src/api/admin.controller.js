@@ -547,7 +547,9 @@ export async function getSettlementById(req, res) {
  */
 export async function generateSettlements(req, res) {
   try {
-    const result = await settlementService.generateBiWeeklySettlements();
+    const { periodStart, periodEnd } = req.body;
+
+    const result = await settlementService.generateBiWeeklySettlements(periodStart, periodEnd);
 
     res.status(201).json({
       success: true,
@@ -650,6 +652,79 @@ export async function markSettlementFailed(req, res) {
   } catch (error) {
     console.error("Mark settlement failed error:", error);
     res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Reverse a manual owner payment
+ * POST /api/admin/settlements/:settlementId/reverse
+ */
+export async function reverseSettlement(req, res) {
+  try {
+    const { settlementId } = req.params;
+    const { reason } = req.body;
+    const adminId = req.user?.id || "system";
+
+    if (!reason) {
+      return res.status(400).json({ success: false, error: "Reason is required" });
+    }
+
+    const settlement = await settlementService.reverseOwnerPayment(
+      settlementId,
+      reason,
+      adminId
+    );
+
+    res.json({
+      success: true,
+      data: settlement,
+      message: "Payment reversed successfully",
+    });
+  } catch (error) {
+    console.error("Reverse settlement error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Delete a FAILED settlement
+ * DELETE /api/admin/settlements/:settlementId
+ */
+export async function deleteSettlement(req, res) {
+  try {
+    const { settlementId } = req.params;
+    const adminId = req.user?.id || "system";
+
+    const result = await settlementService.deleteSettlement(settlementId, adminId);
+
+    res.json({
+      success: true,
+      data: result,
+      message: "Settlement deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete settlement error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get payment history for an owner
+ * GET /api/admin/owners/:ownerId/payment-history
+ */
+export async function getOwnerPaymentHistory(req, res) {
+  try {
+    const { ownerId } = req.params;
+
+    const history = await settlementService.getOwnerPaymentHistory(ownerId);
+
+    res.json({
+      success: true,
+      data: history,
+    });
+  } catch (error) {
+    console.error("Get payment history error:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 }
 
@@ -1054,10 +1129,13 @@ export default {
   createSettlement,
   markSettlementPaid,
   markSettlementFailed,
+  reverseSettlement,
+  deleteSettlement,
   getPendingSettlementsSummary,
   getOwnerEarnings,
   getOwnerEarningsByStation,
   recordOwnerPayment,
+  getOwnerPaymentHistory,
 
   // Audit
   getAuditLogs,
@@ -1146,24 +1224,30 @@ export async function adminRemoteStart(req, res) {
   try {
     const { chargerId } = req.params;
     const { connectorId } = req.body;
+    const cId = parseInt(connectorId) || 1;
 
-    // Verify charger state to prevent duplicate start commands
-    const memState = chargersStore.get(chargerId);
+    // Verify per-connector state to prevent duplicate start commands
+    const memState = chargersStore.get(`${chargerId}:${cId}`);
     if (memState?.status === "Charging" || memState?.status === "Preparing") {
-      return res.status(400).json({ success: false, error: "Charger is already busy" });
+      return res.status(400).json({ success: false, error: `Connector ${cId} is already busy` });
     }
 
-    // Check database for active sessions
-    const activeSession = await prisma.chargingSession.findFirst({
-      where: { chargerId, endedAt: null },
+    // Check database for active sessions on this specific connector
+    const connectorRecord = await prisma.connector.findUnique({
+      where: { chargerId_connectorId: { chargerId, connectorId: cId } },
     });
-    if (activeSession) {
-      return res.status(400).json({ success: false, error: "Charger already has an active session" });
+    if (connectorRecord) {
+      const activeSession = await prisma.chargingSession.findFirst({
+        where: { chargerId, connectorId: connectorRecord.id, endedAt: null },
+      });
+      if (activeSession) {
+        return res.status(400).json({ success: false, error: `Connector ${cId} already has an active session` });
+      }
     }
 
     const result = await remoteStartTransaction(chargerId, {
       idTag: "ADMIN_DEBUG",
-      connectorId: connectorId || 1,
+      connectorId: cId,
     });
 
     res.json({
@@ -1186,11 +1270,22 @@ export async function adminRemoteStart(req, res) {
 export async function adminRemoteStop(req, res) {
   try {
     const { chargerId } = req.params;
+    const { connectorId } = req.body;
 
-    // Find the active session on this charger
+    // Resolve the Connector UUID from the integer OCPP connectorId
+    let connectorUuid = null;
+    if (connectorId) {
+      const connectorRecord = await prisma.connector.findUnique({
+        where: { chargerId_connectorId: { chargerId, connectorId: parseInt(connectorId) } },
+      });
+      if (connectorRecord) connectorUuid = connectorRecord.id;
+    }
+
+    // Find the active session on this charger for this connector
     const activeSession = await prisma.chargingSession.findFirst({
       where: {
         chargerId,
+        ...(connectorUuid ? { connectorId: connectorUuid } : {}),
         endedAt: null,
       },
       orderBy: { startedAt: "desc" },
@@ -1199,7 +1294,7 @@ export async function adminRemoteStop(req, res) {
     if (!activeSession) {
       return res.status(404).json({
         success: false,
-        error: "No active session found on this charger",
+        error: `No active session found on connector ${connectorId || 'any'}`,
       });
     }
 
@@ -1235,8 +1330,14 @@ export async function getActiveSessionForCharger(req, res) {
   try {
     const { chargerId } = req.params;
 
-    // 1) Active session from DB
-    const activeSession = await prisma.chargingSession.findFirst({
+    // Fetch the charger to know how many connectors it has and get pricing
+    const charger = await prisma.charger.findUnique({
+      where: { id: chargerId },
+      include: { connectors: { orderBy: { connectorId: "asc" } }, station: { include: { pricing: true } } }
+    });
+
+    // 1) Active sessions from DB
+    const activeSessions = await prisma.chargingSession.findMany({
       where: {
         chargerId,
         endedAt: null,
@@ -1248,35 +1349,42 @@ export async function getActiveSessionForCharger(req, res) {
             connectors: { orderBy: { connectorId: "asc" } },
           },
         },
+        connector: true,
         user: { select: { id: true, name: true, email: true } },
       },
       orderBy: { startedAt: "desc" },
     });
 
     // 2) In-memory charger status (same source the Flutter app polls via /chargers/:id/status)
-    const memState = chargersStore.get(chargerId);
     const online = isChargerOnline(chargerId);
-    const liveStatus = {
-      online,
-      status: memState?.status || null,
-      transactionId: memState?.transactionId ?? memState?.ocppTransactionId ?? null,
-      meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh ?? null,
-      meterStart: memState?.meterStart ?? memState?.meterStartWh ?? null,
-      energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
-        ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
-        : null,
-      lastHeartbeat: memState?.lastHeartbeat || null,
-      lastMeterTime: memState?.lastMeterTime || null,
-    };
+    const connectorStatuses = [];
+
+    if (charger && charger.connectors) {
+      for (const conn of charger.connectors) {
+        const memState = chargersStore.get(`${chargerId}:${conn.connectorId}`);
+        connectorStatuses.push({
+          connectorId: conn.connectorId,
+          online,
+          status: memState?.status || conn.status || null,
+          transactionId: memState?.transactionId ?? memState?.ocppTransactionId ?? null,
+          meterWh: memState?.lastMeterValue ?? memState?.lastMeterValueWh ?? null,
+          meterStart: memState?.meterStart ?? memState?.meterStartWh ?? null,
+          energyUsedWh: (memState?.meterStartWh || memState?.meterStart)
+            ? ((memState?.lastMeterValueWh || memState?.lastMeterValue || 0) - (memState?.meterStartWh || memState?.meterStart))
+            : null,
+          lastHeartbeat: memState?.lastHeartbeat || null,
+          lastMeterTime: memState?.lastMeterTime || null,
+        });
+      }
+    }
 
     // 3) Live session from chargingSessionLive table (detailed meter readings: power, voltage, current, soc)
-    let liveSession = null;
-    if (activeSession) {
+    for (const session of activeSessions) {
       const liveMeter = await prisma.chargingSessionLive.findUnique({
-        where: { sessionId: activeSession.id },
+        where: { sessionId: session.id },
       });
       if (liveMeter) {
-        liveSession = {
+        session.liveSession = {
           energyWh: liveMeter.energyWh,
           powerW: liveMeter.powerW,
           voltageV: liveMeter.voltageV,
@@ -1296,6 +1404,7 @@ export async function getActiveSessionForCharger(req, res) {
       },
       include: {
         user: { select: { id: true, name: true, email: true } },
+        connector: true,
       },
       orderBy: { startedAt: "desc" },
       take: 10,
@@ -1303,17 +1412,16 @@ export async function getActiveSessionForCharger(req, res) {
 
     // 5) Get pricing for cost calculation
     let energyRatePerKwh = 30; // default fallback
-    if (activeSession?.charger?.station?.pricing) {
-      const pricing = activeSession.charger.station.pricing;
+    if (charger?.station?.pricing) {
+      const pricing = charger.station.pricing;
       if (pricing.perKwh) energyRatePerKwh = parseFloat(pricing.perKwh);
     }
 
     res.json({
       success: true,
       data: {
-        activeSession,
-        liveStatus,
-        liveSession,
+        activeSessions,
+        connectorStatuses,
         energyRatePerKwh,
         recentSessions,
       },
