@@ -29,6 +29,9 @@ router.get("/admin/owners/:ownerId/earnings-by-station", requireAdmin, adminCont
 // Record payment to owner
 router.post("/admin/owners/:ownerId/payments", requireAdmin, adminController.recordOwnerPayment);
 
+// Get owner payment history
+router.get("/admin/owners/:ownerId/payment-history", requireAdmin, adminController.getOwnerPaymentHistory);
+
 // Get all users
 router.get("/admin/users", requireAdmin, adminController.getUsers);
 
@@ -168,6 +171,12 @@ router.post("/admin/settlements/:settlementId/pay", requireAdmin, adminControlle
 
 // Mark settlement as failed
 router.post("/admin/settlements/:settlementId/fail", requireAdmin, adminController.markSettlementFailed);
+
+// Reverse a manual payment
+router.post("/admin/settlements/:settlementId/reverse", requireAdmin, adminController.reverseSettlement);
+
+// Delete a FAILED settlement
+router.delete("/admin/settlements/:settlementId", requireAdmin, adminController.deleteSettlement);
 
 // ============================================
 // AUDIT LOGS
