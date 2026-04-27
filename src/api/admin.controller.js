@@ -1082,75 +1082,7 @@ export async function getUserWallet(req, res) {
   }
 }
 
-export default {
-  // Users
-  createOwner,
-  getUsers,
-  getUserById,
-  getUserWallet,
-  updateUserStatus,
-  updateUserRole,
 
-  // Chargers
-  registerCharger,
-  getChargers,
-  getChargerById,
-  assignChargerToStation,
-
-  // Stations
-  createStation,
-  getStations,
-  getStationById,
-  updateStation,
-  assignStationToOwner,
-
-  // Pricing
-  createPricing,
-  updatePricing,
-  getPricings,
-  assignPricingToStation,
-
-  // Sessions
-  getSessions,
-  getSessionById,
-  getSessionStats,
-  forceStopSession,
-
-  // Dashboard
-  getDashboardMetrics,
-
-  // OCPP Logs
-  getOcppLogs,
-
-  // Settlements
-  getSettlements,
-  getSettlementById,
-  generateSettlements,
-  createSettlement,
-  markSettlementPaid,
-  markSettlementFailed,
-  reverseSettlement,
-  deleteSettlement,
-  getPendingSettlementsSummary,
-  getOwnerEarnings,
-  getOwnerEarningsByStation,
-  recordOwnerPayment,
-  getOwnerPaymentHistory,
-
-  // Audit
-  getAuditLogs,
-
-  // QR Codes
-  generateChargerQR,
-  regenerateChargerQR,
-  getChargerQR,
-
-  // Debug
-  adminRemoteStart,
-  adminRemoteStop,
-  getActiveSessionForCharger,
-  adminSetWalletBalance,
-};
 
 // ============================================
 // QR CODE HANDLERS
@@ -1623,58 +1555,6 @@ export async function unassignCharger(req, res) {
   }
 }
 
-export default {
-  createOwner,
-  getUsers,
-  updateUserStatus,
-  updateUserRole,
-  registerCharger,
-  getChargers,
-  getChargerById,
-  assignChargerToStation,
-  createStation,
-  getStations,
-  assignStationToOwner,
-  createPricing,
-  updatePricing,
-  getPricings,
-  assignPricingToStation,
-  getSessions,
-  getSessionStats,
-  getOcppLogs,
-  getSettlements,
-  getSettlementById,
-  generateSettlements,
-  createSettlement,
-  markSettlementPaid,
-  markSettlementFailed,
-  getPendingSettlementsSummary,
-  getOwnerEarnings,
-  getOwnerEarningsByStation,
-  recordOwnerPayment,
-  getAuditLogs,
-  getDashboardMetrics,
-  getSessionById,
-  forceStopSession,
-  getStationById,
-  updateStation,
-  getUserById,
-  getUserWallet,
-  generateChargerQR,
-  regenerateChargerQR,
-  getChargerQR,
-  adminRemoteStart,
-  adminRemoteStop,
-  getActiveSessionForCharger,
-  adminSetWalletBalance,
-  deleteCharger,
-  updateCharger,
-  addConnector,
-  removeConnector,
-  deleteStation,
-  unassignCharger,
-  deletePricing,
-};
 
 /**
  * Delete pricing plan
@@ -1692,3 +1572,80 @@ export async function deletePricing(req, res) {
     res.status(400).json({ success: false, error: error.message });
   }
 }
+
+export default {
+  // Users
+  createOwner,
+  getUsers,
+  getUserById,
+  getUserWallet,
+  updateUserStatus,
+  updateUserRole,
+
+  // Chargers
+  registerCharger,
+  getChargers,
+  getChargerById,
+  assignChargerToStation,
+  deleteCharger,
+  updateCharger,
+  addConnector,
+  removeConnector,
+  unassignCharger,
+
+  // Stations
+  createStation,
+  getStations,
+  getStationById,
+  updateStation,
+  assignStationToOwner,
+  deleteStation,
+
+  // Pricing
+  createPricing,
+  updatePricing,
+  getPricings,
+  assignPricingToStation,
+  deletePricing,
+
+  // Sessions
+  getSessions,
+  getSessionById,
+  getSessionStats,
+  forceStopSession,
+
+  // Dashboard
+  getDashboardMetrics,
+
+  // OCPP Logs
+  getOcppLogs,
+
+  // Settlements
+  getSettlements,
+  getSettlementById,
+  generateSettlements,
+  createSettlement,
+  markSettlementPaid,
+  markSettlementFailed,
+  reverseSettlement,
+  deleteSettlement,
+  getPendingSettlementsSummary,
+  getOwnerEarnings,
+  getOwnerEarningsByStation,
+  recordOwnerPayment,
+  getOwnerPaymentHistory,
+
+  // Audit
+  getAuditLogs,
+
+  // QR Codes
+  generateChargerQR,
+  regenerateChargerQR,
+  getChargerQR,
+
+  // Debug
+  adminRemoteStart,
+  adminRemoteStop,
+  getActiveSessionForCharger,
+  adminSetWalletBalance,
+};
