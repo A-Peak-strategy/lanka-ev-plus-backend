@@ -5,5 +5,5 @@
 
 */
 -- AlterTable
-ALTER TABLE `chargerruntimestate` DROP PRIMARY KEY,
+ALTER TABLE `chargerRuntimeState` DROP PRIMARY KEY,
     ADD PRIMARY KEY (`chargerId`, `connectorId`);
