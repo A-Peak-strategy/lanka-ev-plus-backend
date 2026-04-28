@@ -305,6 +305,134 @@ export async function assignChargerToStation(chargerId, stationId, adminId) {
   return updated;
 }
 
+/**
+ * Delete a charger
+ */
+export async function deleteCharger(chargerId, adminId) {
+  const charger = await prisma.charger.findUnique({
+    where: { id: chargerId },
+    include: {
+      sessions: { where: { endedAt: null } }
+    }
+  });
+
+  if (!charger) throw new Error("Charger not found");
+  if (charger.sessions && charger.sessions.length > 0) {
+    throw new Error("Cannot delete charger with active charging sessions");
+  }
+
+  // Delete dependencies first
+  await prisma.$transaction([
+    prisma.connector.deleteMany({ where: { chargerId } }),
+    prisma.chargerRuntimeState.deleteMany({ where: { chargerId } }),
+    prisma.ocppMessageLog.deleteMany({ where: { chargerId } }),
+    prisma.charger.delete({ where: { id: chargerId } })
+  ]);
+
+  await logAdminAction({
+    adminId,
+    action: "DELETE_CHARGER",
+    targetType: "CHARGER",
+    targetId: chargerId,
+    previousValue: charger
+  });
+
+  return charger;
+}
+
+/**
+ * Update charger details
+ */
+export async function updateCharger(chargerId, data, adminId) {
+  const previous = await prisma.charger.findUnique({ where: { id: chargerId } });
+  if (!previous) throw new Error("Charger not found");
+
+  const allowedFields = ["stationId", "vendor", "model", "firmwareVersion", "isRegistered"];
+  const updateData = {};
+  for (const key of allowedFields) {
+    if (data[key] !== undefined) {
+      updateData[key] = data[key];
+    }
+  }
+
+  if (updateData.stationId) {
+    const station = await prisma.station.findUnique({ where: { id: updateData.stationId } });
+    if (!station) throw new Error("Station not found");
+  }
+
+  const updated = await prisma.charger.update({
+    where: { id: chargerId },
+    data: updateData
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "UPDATE_CHARGER",
+    targetType: "CHARGER",
+    targetId: chargerId,
+    previousValue: previous,
+    newValue: updateData
+  });
+
+  return updated;
+}
+
+/**
+ * Add a connector to a charger
+ */
+export async function addConnector(chargerId, adminId) {
+  const charger = await prisma.charger.findUnique({
+    where: { id: chargerId },
+    include: { connectors: true }
+  });
+  if (!charger) throw new Error("Charger not found");
+
+  const existingIds = charger.connectors.map(c => c.connectorId);
+  const nextId = existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
+
+  const connector = await prisma.connector.create({
+    data: {
+      chargerId,
+      connectorId: nextId,
+      status: "AVAILABLE"
+    }
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "ADD_CONNECTOR",
+    targetType: "CHARGER",
+    targetId: chargerId,
+    newValue: connector
+  });
+
+  return connector;
+}
+
+/**
+ * Remove a connector from a charger
+ */
+export async function removeConnector(chargerId, connectorId, adminId) {
+  const connector = await prisma.connector.findFirst({
+    where: { id: connectorId, chargerId }
+  });
+  if (!connector) throw new Error("Connector not found");
+
+  await prisma.connector.delete({
+    where: { id: connector.id }
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "REMOVE_CONNECTOR",
+    targetType: "CHARGER",
+    targetId: chargerId,
+    previousValue: connector
+  });
+
+  return connector;
+}
+
 // ============================================
 // STATION MANAGEMENT
 // ============================================
@@ -392,6 +520,40 @@ export async function getStations(filters = {}) {
 }
 
 /**
+ * Delete a station
+ * 
+ * @param {string} stationId
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function deleteStation(stationId, adminId) {
+  const station = await prisma.station.findUnique({
+    where: { id: stationId },
+    include: { chargers: true },
+  });
+  if (!station) throw new Error("Station not found");
+
+  // Check if it has chargers
+  if (station.chargers.length > 0) {
+    throw new Error("Cannot delete station because it has chargers assigned. Please unassign chargers first.");
+  }
+
+  const deleted = await prisma.station.delete({
+    where: { id: stationId },
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "DELETE_STATION",
+    targetType: "STATION",
+    targetId: stationId,
+    previousValue: station,
+  });
+
+  return deleted;
+}
+
+/**
  * Assign station to owner
  * 
  * @param {string} stationId
@@ -423,9 +585,75 @@ export async function assignStationToOwner(stationId, ownerId, adminId) {
   return updated;
 }
 
+/**
+ * Unassign charger from station
+ */
+export async function unassignCharger(chargerId, adminId) {
+  const charger = await prisma.charger.findUnique({ where: { id: chargerId } });
+  if (!charger) throw new Error("Charger not found");
+
+  const activeSessions = await prisma.chargingSession.count({
+    where: { chargerId, endedAt: null }
+  });
+  if (activeSessions > 0) {
+    throw new Error("Cannot unassign charger while it has active charging sessions.");
+  }
+
+  const updated = await prisma.charger.update({
+    where: { id: chargerId },
+    data: { stationId: null }
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "UNASSIGN_CHARGER",
+    targetType: "CHARGER",
+    targetId: chargerId,
+    previousValue: { stationId: charger.stationId },
+    newValue: { stationId: null }
+  });
+
+  return updated;
+}
+
 // ============================================
 // PRICING CONFIGURATION
 // ============================================
+
+/**
+ * Delete a pricing plan
+ * 
+ * @param {string} pricingId
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function deletePricing(pricingId, adminId) {
+  const pricing = await prisma.pricing.findUnique({ where: { id: pricingId } });
+  if (!pricing) throw new Error("Pricing plan not found");
+
+  const stationsCount = await prisma.station.count({
+    where: { pricingId }
+  });
+
+  if (stationsCount > 0) {
+    throw new Error(`Cannot delete pricing plan. It is currently in use by ${stationsCount} station(s).`);
+  }
+
+  const deleted = await prisma.pricing.delete({
+    where: { id: pricingId }
+  });
+
+  await logAdminAction({
+    adminId,
+    action: "DELETE_PRICING",
+    targetType: "PRICING",
+    targetId: pricingId,
+    previousValue: { name: pricing.name, pricePerKwh: pricing.pricePerKwh },
+  });
+
+  return deleted;
+}
+
 
 /**
  * Create pricing configuration

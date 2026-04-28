@@ -349,7 +349,7 @@ export async function recordCommission({
       console.warn(`[LEDGER] Admin balance is low: ${currentBalance.toFixed(2)} < ${commissionAmount.toFixed(2)}. This happens if user balance was added manually via DB.`);
     }
 
-    const newBalance = currentBalance.minus(commissionAmount);
+    const newBalance = currentBalance.plus(commissionAmount);
 
     // Update admin wallet (deduct commission)
     const updatedAdminWallet = await tx.wallet.update({

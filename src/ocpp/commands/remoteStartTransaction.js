@@ -113,9 +113,10 @@ export async function startChargingForUser(params) {
   // IMPORTANT: We use the Map directly because updateChargerState() writes
   // to the DB via chargerRuntimeState which has a field whitelist that
   // silently drops unknown fields like pendingUserId.
-  const { chargersStore } = await import("../../services/chargerStore.service.js");
-  const currentState = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, {
+  const { chargersStore, getChargerKey } = await import("../../services/chargerStore.service.js");
+  const key = getChargerKey(chargerId, connectorId);
+  const currentState = chargersStore.get(key) || {};
+  chargersStore.set(key, {
     ...currentState,
     pendingUserId: userId,
     pendingPresetAmount: presetAmount || null,

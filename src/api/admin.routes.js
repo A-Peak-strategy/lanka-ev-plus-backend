@@ -29,6 +29,9 @@ router.get("/admin/owners/:ownerId/earnings-by-station", requireAdmin, adminCont
 // Record payment to owner
 router.post("/admin/owners/:ownerId/payments", requireAdmin, adminController.recordOwnerPayment);
 
+// Get owner payment history
+router.get("/admin/owners/:ownerId/payment-history", requireAdmin, adminController.getOwnerPaymentHistory);
+
 // Get all users
 router.get("/admin/users", requireAdmin, adminController.getUsers);
 
@@ -60,6 +63,21 @@ router.get("/admin/chargers/:chargerId", requireAdmin, adminController.getCharge
 // Assign charger to station
 router.post("/admin/chargers/:chargerId/assign", requireAdmin, adminController.assignChargerToStation);
 
+// Unassign charger from station
+router.post("/admin/chargers/:chargerId/unassign", requireAdmin, adminController.unassignCharger);
+
+// Delete charger
+router.delete("/admin/chargers/:chargerId", requireAdmin, adminController.deleteCharger);
+
+// Update charger
+router.put("/admin/chargers/:chargerId", requireAdmin, adminController.updateCharger);
+
+// Add connector
+router.post("/admin/chargers/:chargerId/connectors", requireAdmin, adminController.addConnector);
+
+// Remove connector
+router.delete("/admin/chargers/:chargerId/connectors/:connectorId", requireAdmin, adminController.removeConnector);
+
 // QR Code management
 router.post("/admin/chargers/:chargerId/generate-qr", requireAdmin, adminController.generateChargerQR);
 router.post("/admin/chargers/:chargerId/regenerate-qr", requireAdmin, adminController.regenerateChargerQR);
@@ -81,6 +99,9 @@ router.get("/admin/stations/:stationId", requireAdmin, adminController.getStatio
 // Update station
 router.put("/admin/stations/:stationId", requireAdmin, adminController.updateStation);
 
+// Delete station
+router.delete("/admin/stations/:stationId", requireAdmin, adminController.deleteStation);
+
 // Assign station to owner
 router.post("/admin/stations/:stationId/assign", requireAdmin, adminController.assignStationToOwner);
 
@@ -99,6 +120,9 @@ router.get("/admin/pricing", requireAdmin, adminController.getPricings);
 
 // Update pricing
 router.patch("/admin/pricing/:pricingId", requireAdmin, adminController.updatePricing);
+
+// Delete pricing
+router.delete("/admin/pricing/:pricingId", requireAdmin, adminController.deletePricing);
 
 // ============================================
 // SESSION MONITORING
@@ -147,6 +171,12 @@ router.post("/admin/settlements/:settlementId/pay", requireAdmin, adminControlle
 
 // Mark settlement as failed
 router.post("/admin/settlements/:settlementId/fail", requireAdmin, adminController.markSettlementFailed);
+
+// Reverse a manual payment
+router.post("/admin/settlements/:settlementId/reverse", requireAdmin, adminController.reverseSettlement);
+
+// Delete a FAILED settlement
+router.delete("/admin/settlements/:settlementId", requireAdmin, adminController.deleteSettlement);
 
 // ============================================
 // AUDIT LOGS

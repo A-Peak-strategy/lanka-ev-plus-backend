@@ -225,66 +225,51 @@ export async function handleSessionFault(data) {
     return;
   }
 
-  // Calculate actual energy delivered
-  const lastMeterWh = session.energyUsedWh || 0;
-  const actualCost = calculateActualCost(lastMeterWh, session.pricePerKwh);
-  const chargedAmount = new Decimal(session.totalCost?.toString() || "0");
-  const refundAmount = chargedAmount.minus(actualCost);
-
-  // Process refund if we overcharged
-  if (refundAmount.gt(0) && session.userId) {
-    const idempotencyKey = generateIdempotencyKey(
-      "refund",
-      transactionId,
-      "fault"
-    );
-
-    await walletService.processRefund({
-      userId: session.userId,
-      amount: refundAmount.toFixed(2),
-      reason: `Partial refund due to charger fault: ${errorCode}`,
-      referenceId: transactionId,
-      idempotencyKey,
-    });
-
-    console.log(`💰 Refunded ${refundAmount.toFixed(2)} for faulted session`);
-  }
-
-  // Finalize session
+  // Update session status to FAULTED, but DO NOT finalize yet.
+  // This allows the session to recover if the charger reconnects.
   await prisma.chargingSession.update({
     where: { transactionId },
     data: {
-      endedAt: new Date(),
-      stopReason: "CHARGER_FAULT",
-      totalCost: actualCost.toFixed(2),
       status: "FAULTED",
     },
   });
 
-  // Notify user
-  if (session.userId) {
-    await notificationService.sendChargingForceStopped({
-      userId: session.userId,
-      transactionId,
-      reason: `Charger fault: ${errorCode}`,
-      energyUsedWh: lastMeterWh,
-      totalCost: actualCost.toFixed(2),
-    });
-  }
+  // We skip notification here as the mobile app handles the fault UI directly.
 }
 
 /**
- * Get active session for a charger
+ * Get active session for a charger or specific connector
  * 
  * @param {string} chargerId
+ * @param {number} [connectorId] - Optional OCPP connector ID
  * @returns {Promise<object|null>}
  */
-export async function getActiveSession(chargerId) {
+export async function getActiveSession(chargerId, connectorId) {
+  const where = {
+    chargerId,
+    endedAt: null,
+  };
+
+  if (connectorId) {
+    const connector = await prisma.connector.findUnique({
+      where: {
+        chargerId_connectorId: {
+          chargerId,
+          connectorId: parseInt(connectorId),
+        },
+      },
+    });
+
+    if (connector) {
+      where.connectorId = connector.id;
+    } else {
+      // If connectorId specified but not found, return null
+      return null;
+    }
+  }
+
   return prisma.chargingSession.findFirst({
-    where: {
-      chargerId,
-      endedAt: null,
-    },
+    where,
     orderBy: { startedAt: "desc" },
   });
 }
@@ -308,7 +293,7 @@ export async function updateSessionStatus(transactionId, status) {
     }
 
     // Don't update status if session is already in a terminal state
-    if (session.status === "COMPLETED" || session.status === "FAULTED") {
+    if (session.status === "COMPLETED") {
       console.log(`[SESSION] Skipping status update for ${transactionId}: already ${session.status}`);
       return session;
     }
@@ -354,6 +339,7 @@ export async function getActiveSessionsForUser(userId) {
           },
         },
       },
+      connector: true,
       live: true,
     },
     orderBy: { startedAt: "desc" },
