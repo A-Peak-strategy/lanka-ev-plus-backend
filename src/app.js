@@ -9,6 +9,7 @@ import paymentRoutes from "./api/payment.routes.js";
 import connectorRoutes from "./api/connector.routes.js";
 import userRoutes from "./api/user.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
+import appConfigRoutes from "./api/appConfig.routes.js";
 
 const app = express();
 
@@ -119,6 +120,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/connectors", connectorRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api", adminRoutes);
+app.use("/api/app-config", appConfigRoutes);
 
 // ============================================
 // ERROR HANDLING

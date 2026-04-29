@@ -712,3 +712,21 @@ model ChargerRuntimeState {
   @@index([connectionStatus])
   @@index([transactionId])
 }
+model AppConfig {
+  id                    Int      @id @default(1)
+
+  latestAndroidVersion  String
+  latestIosVersion      String
+  minAndroidVersion     String
+  minIosVersion         String
+
+  androidStoreUrl       String?
+  iosStoreUrl           String?
+
+  forceUpdate           Boolean  @default(false)
+  maintenanceMode       Boolean  @default(false)
+  maintenanceMessage    String?
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
