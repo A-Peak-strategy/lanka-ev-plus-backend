@@ -7,7 +7,8 @@ import {
   getChargerSessions,
   startCharging,
   stopCharging,
-  getLiveSession
+  getLiveSession,
+  getChargerPricing
 } from "./charger.controller.js";
 import { verifyToken, requireActiveUser, optionalAuth } from "../middleware/auth.middleware.js";
 
@@ -35,5 +36,8 @@ router.post("/:chargerId/start", verifyToken, requireActiveUser, startCharging);
 router.post("/:chargerId/stop", verifyToken, requireActiveUser, stopCharging);
 
 router.get("/sessions/:transactionId/live", getLiveSession);
+
+// GET /api/chargers/:chargerId/pricing - Get charger pricing (public)
+router.get("/:chargerId/pricing", optionalAuth, getChargerPricing);
 
 export default router;
