@@ -22,6 +22,7 @@ export const getAllChargers = async (req, res, next) => {
             id: true,
             name: true,
             address: true,
+            pricing: true,
           },
         },
         connectors: {
@@ -550,7 +551,45 @@ export async function getLiveSession(req, res) {
       temperatureC: live.temperatureC,
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
-      pricePerKwh: session?.pricePerKwh?.toString() ?? null,
-    }
+      pricePerKwh: session?.pricePerKwh?.toString() ?? null,}
   });
 }
+
+
+/**
+ * Get charger pricing
+ * 
+ * GET /api/chargers/:chargerId/pricing
+ */
+export const getChargerPricing = async (req, res, next) => {
+  try {
+    const { chargerId } = req.params;
+
+    validateChargerId(chargerId);
+
+    const charger = await prisma.charger.findUnique({
+      where: { id: chargerId },
+      include: {
+        station: {
+          include: {
+            pricing: true,
+          },
+        },
+      },
+    });
+
+    if (!charger) {
+      throw new NotFoundError("Charger", chargerId);
+    }
+
+    const pricing = charger.station?.pricing;
+
+    res.json({
+      success: true,
+      pricing: pricing || null,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
