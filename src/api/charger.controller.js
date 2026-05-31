@@ -6,6 +6,7 @@ import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
 import sessionService from "../services/session.service.js";
+import * as walletService from "../services/wallet.service.js";
 
 /**
  * Get all chargers (from memory and database)
@@ -38,7 +39,7 @@ export const getAllChargers = async (req, res, next) => {
     // Merge with in-memory state
     const chargers = dbChargers.map((charger) => {
       const online = isChargerOnline(charger.id);
-      
+
       // Update connector statuses from memory
       const connectors = charger.connectors.map(conn => {
         const memState = chargersStore.get(getChargerKey(charger.id, conn.connectorId));
@@ -52,7 +53,7 @@ export const getAllChargers = async (req, res, next) => {
       // Charger-wide status: AVAILABLE if any connector is available
       const hasAvailable = connectors.some(c => c.status === "AVAILABLE");
       const allFaulted = connectors.length > 0 && connectors.every(c => c.status === "FAULTED");
-      
+
       let chargerStatus = charger.status;
       if (connectors.length > 0) {
         if (hasAvailable) chargerStatus = "AVAILABLE";
@@ -129,7 +130,7 @@ export const getCharger = async (req, res, next) => {
     // Charger-wide status: AVAILABLE if any connector is AVAILABLE
     const hasAvailable = connectors.some(c => c.status === "AVAILABLE");
     const allFaulted = connectors.length > 0 && connectors.every(c => c.status === "FAULTED");
-    
+
     let chargerStatus = charger.status;
     if (connectors.length > 0) {
       if (hasAvailable) chargerStatus = "AVAILABLE";
@@ -252,12 +253,12 @@ export const getChargerStatus = async (req, res, next) => {
       if (queryConnectorId) {
         memState = chargersStore.get(getChargerKey(chargerId, queryConnectorId));
       }
-      
+
       // If still no state and we have a user, try to find their active session
       if (!memState && userId) {
         const activeSessions = await sessionService.getActiveSessionsForUser(userId);
         const session = activeSessions.find(s => s.chargerId === chargerId);
-        
+
         if (session && session.connector) {
           connectorId = session.connector.connectorId;
           memState = chargersStore.get(getChargerKey(chargerId, connectorId));
@@ -270,7 +271,7 @@ export const getChargerStatus = async (req, res, next) => {
       where: { id: chargerId },
       select: { status: true }
     });
-    
+
     const online = isChargerOnline(chargerId);
 
     if (!memState && !online && !charger) {
@@ -295,8 +296,8 @@ export const getChargerStatus = async (req, res, next) => {
       internalTransactionId: memState?.internalTransactionId,
       meterWh: memState?.lastMeterValueWh,
       meterStart: memState?.meterStartWh,
-      energyUsedWh: memState?.lastMeterValueWh && memState?.meterStartWh 
-        ? memState.lastMeterValueWh - memState.meterStartWh 
+      energyUsedWh: memState?.lastMeterValueWh && memState?.meterStartWh
+        ? memState.lastMeterValueWh - memState.meterStartWh
         : 0,
       sessionStartTime: memState?.sessionStartTime,
       lastHeartbeat: responseState?.lastHeartbeat,
@@ -315,27 +316,36 @@ export const getChargerStatus = async (req, res, next) => {
  * Body: { userId?: string, connectorId?: number }
  */
 export const startCharging = async (req, res, next) => {
+  let lockedAmount = null;
+  let userId = null;
+
   try {
     const { chargerId } = req.params;
     const { connectorId = 1, presetAmount } = req.body;
-    const userId = req.user?.id;
+
+    userId = req.user?.id;
 
     if (!userId) {
-      console.warn(`[START] No userId provided for starting charger ${chargerId}. Defaulting to USER_API_REQUEST. This may affect auditing and billing.`);
-      throw new ValidationError("userId is required to start charging", "USER_ID_REQUIRED");
+      throw new ValidationError(
+        "userId is required to start charging",
+        "USER_ID_REQUIRED"
+      );
     }
 
     // Validate inputs
     validateChargerId(chargerId);
     const validConnectorId = validateConnectorId(connectorId);
 
-    // Check if charger is online
+    // Charger must be online
     if (!isChargerOnline(chargerId)) {
       throw new ChargerOfflineError(chargerId);
     }
 
-    // Check for existing active transaction on this specific connector
-    const memState = chargersStore.get(getChargerKey(chargerId, validConnectorId));
+    // Ensure connector is not already in use
+    const memState = chargersStore.get(
+      getChargerKey(chargerId, validConnectorId)
+    );
+
     if (memState?.transactionId) {
       throw new ConflictError(
         `Connector ${validConnectorId} already has an active transaction`,
@@ -343,27 +353,35 @@ export const startCharging = async (req, res, next) => {
       );
     }
 
-    // Validate and lock wallet funds if presetAmount is provided
-    let lockedAmount = null;
-    if (presetAmount && presetAmount > 0) {
-      const walletService = await import("../services/wallet.service.js");
-
+    // Lock wallet funds (if preset amount specified)
+    if (presetAmount && Number(presetAmount) > 0) {
       try {
-        const lockResult = await walletService.lockFunds(userId, presetAmount);
-        lockedAmount = presetAmount;
-        console.log(`[START] Locked LKR ${presetAmount} for user ${userId} on charger ${chargerId}`);
+        await walletService.lockFunds(userId, presetAmount);
+
+        lockedAmount = Number(presetAmount);
+
+        console.log(
+          `[START] Locked LKR ${lockedAmount} for user ${userId} on charger ${chargerId}`
+        );
       } catch (lockError) {
-        if (lockError.name === "InsufficientBalanceError" || lockError.message?.includes("Insufficient")) {
-          const available = await walletService.getAvailableBalance(userId);
+        const insufficientBalance =
+          lockError.name === "InsufficientBalanceError" ||
+          lockError.message?.includes("Insufficient");
+
+        if (insufficientBalance) {
+          const availableBalance =
+            await walletService.getAvailableBalance(userId);
+
           return res.status(400).json({
             success: false,
             error: "Insufficient balance",
             code: "INSUFFICIENT_BALANCE",
-            message: `Your wallet balance (LKR ${available}) is insufficient for the requested amount (LKR ${presetAmount}). Please top up.`,
-            availableBalance: available,
-            requestedAmount: presetAmount.toString(),
+            message: `Your wallet balance (LKR ${availableBalance}) is insufficient for the requested amount (LKR ${presetAmount}). Please top up.`,
+            availableBalance,
+            requestedAmount: Number(presetAmount),
           });
         }
+
         throw lockError;
       }
     }
@@ -371,36 +389,161 @@ export const startCharging = async (req, res, next) => {
     // Send RemoteStartTransaction
     const result = await startChargingForUser({
       chargerId,
-      userId: userId || "USER_API_REQUEST",
+      userId,
       connectorId: validConnectorId,
       presetAmount: lockedAmount,
     });
 
-    if (result.success) {
-      res.json({
-        success: true,
-        message: "Remote start command accepted",
-        chargerId,
-        connectorId: validConnectorId,
-        presetAmount: lockedAmount,
-      });
-    } else {
-      // If charger rejected, unlock the funds
+    // Charger rejected request
+    if (!result.success) {
       if (lockedAmount) {
-        const walletService = await import("../services/wallet.service.js");
-        await walletService.unlockFunds(userId, lockedAmount).catch(err =>
-          console.error(`[START] Failed to unlock funds after rejection:`, err.message)
-        );
+        try {
+          await walletService.unlockFunds(userId, lockedAmount);
+
+          console.log(
+            `[START] Unlocked LKR ${lockedAmount} after charger rejected start`
+          );
+
+          // Prevent double unlock in catch block
+          lockedAmount = null;
+        } catch (unlockError) {
+          console.error(
+            `[START] Failed to unlock funds after rejection:`,
+            unlockError
+          );
+        }
       }
+
       throw new ConflictError(
         result.error || "Charger rejected start command",
         "CHARGER_REJECTED_START"
       );
     }
+
+    // IMPORTANT:
+    // At this point funds remain locked.
+    // StopTransaction flow is responsible for settlement/unlock.
+
+    return res.json({
+      success: true,
+      message: "Remote start command accepted",
+      chargerId,
+      connectorId: validConnectorId,
+      presetAmount: lockedAmount,
+    });
   } catch (error) {
-    next(error);
+    // Only unlock if we still own the lock.
+    // If start was successful, lockedAmount should remain locked.
+    if (lockedAmount) {
+      try {
+        await walletService.unlockFunds(userId, lockedAmount);
+
+        console.log(
+          `[START] Unlocked LKR ${lockedAmount} due to start failure`
+        );
+
+        lockedAmount = null;
+      } catch (unlockError) {
+        console.error(
+          `[START] Failed to unlock funds after unexpected error:`,
+          unlockError
+        );
+      }
+    }
+
+    return next(error);
   }
 };
+// export const startCharging = async (req, res, next) => {
+//   let lockedAmount = null;
+//   let userId = null;
+//   try {
+//     const { chargerId } = req.params;
+//     const { connectorId = 1, presetAmount } = req.body;
+//     userId = req.user?.id;
+
+//     if (!userId) {
+//       console.warn(`[START] No userId provided for starting charger ${chargerId}. Defaulting to USER_API_REQUEST. This may affect auditing and billing.`);
+//       throw new ValidationError("userId is required to start charging", "USER_ID_REQUIRED");
+//     }
+
+//     // Validate inputs
+//     validateChargerId(chargerId);
+//     const validConnectorId = validateConnectorId(connectorId);
+
+//     // Check if charger is online
+//     if (!isChargerOnline(chargerId)) {
+//       throw new ChargerOfflineError(chargerId);
+//     }
+
+//     // Check for existing active transaction on this specific connector
+//     const memState = chargersStore.get(getChargerKey(chargerId, validConnectorId));
+//     if (memState?.transactionId) {
+//       throw new ConflictError(
+//         `Connector ${validConnectorId} already has an active transaction`,
+//         "ACTIVE_TRANSACTION_EXISTS"
+//       );
+//     }
+
+//     // Validate and lock wallet funds if presetAmount is provided
+//     if (presetAmount && presetAmount > 0) {
+//       try {
+//         const lockResult = await walletService.lockFunds(userId, presetAmount);
+//         lockedAmount = presetAmount;
+//         console.log(`[START] Locked LKR ${presetAmount} for user ${userId} on charger ${chargerId}`);
+//       } catch (lockError) {
+//         if (lockError.name === "InsufficientBalanceError" || lockError.message?.includes("Insufficient")) {
+//           const available = await walletService.getAvailableBalance(userId);
+//           return res.status(400).json({
+//             success: false,
+//             error: "Insufficient balance",
+//             code: "INSUFFICIENT_BALANCE",
+//             message: `Your wallet balance (LKR ${available}) is insufficient for the requested amount (LKR ${presetAmount}). Please top up.`,
+//             availableBalance: available,
+//             requestedAmount: presetAmount.toString(),
+//           });
+//         }
+//         throw lockError;
+//       }
+//     }
+
+//     // Send RemoteStartTransaction
+//     const result = await startChargingForUser({
+//       chargerId,
+//       userId: userId || "USER_API_REQUEST",
+//       connectorId: validConnectorId,
+//       presetAmount: lockedAmount,
+//     });
+
+//     if (result.success) {
+//       res.json({
+//         success: true,
+//         message: "Remote start command accepted",
+//         chargerId,
+//         connectorId: validConnectorId,
+//         presetAmount: lockedAmount,
+//       });
+//     } else {
+//       // If charger rejected, unlock the funds
+//       if (lockedAmount) {
+//         await walletService.unlockFunds(userId, lockedAmount).catch(err =>
+//           console.error(`[START] Failed to unlock funds after rejection:`, err.message)
+//         );
+//       }
+//       throw new ConflictError(
+//         result.error || "Charger rejected start command",
+//         "CHARGER_REJECTED_START"
+//       );
+//     }
+//   } catch (error) {
+//     if (lockedAmount) {
+//       await walletService.unlockFunds(userId, lockedAmount).catch(err =>
+//         console.error(`[START] Failed to unlock funds after unexpected error:`, err.message)
+//       );
+//     }
+//     next(error);
+//   }
+// };
 
 /**
  * Stop charging remotely
@@ -428,7 +571,7 @@ export const stopCharging = async (req, res, next) => {
     // Find active session for this user
     const activeSessions = await sessionService.getActiveSessionsForUser(userId);
     let session;
-    
+
     if (connectorId) {
       session = activeSessions.find(s => s.chargerId === chargerId && s.connector?.connectorId === parseInt(connectorId));
     } else {
@@ -551,7 +694,8 @@ export async function getLiveSession(req, res) {
       temperatureC: live.temperatureC,
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
-      pricePerKwh: session?.pricePerKwh?.toString() ?? null,}
+      pricePerKwh: session?.pricePerKwh?.toString() ?? null,
+    }
   });
 }
 

@@ -1,6 +1,7 @@
 import { sendCallResult } from "../messageQueue.js";
 import { ChargePointStatus, ChargePointErrorCode } from "../ocppConstants.js";
-import { updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { chargersStore, getChargerKey, updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { clearPendingStartState, clearPendingStartWatchdog } from "../commands/remoteStartTransaction.js";
 import { ocppEvents } from "../ocppEvents.js";
 import prisma from "../../config/db.js";
 import sessionService from "../../services/session.service.js";
@@ -93,6 +94,25 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
   // Handle available (ready for new session)
   if (status === ChargePointStatus.AVAILABLE) {
     console.log(`[STATUS] ${chargerId}#${connectorId}: Available for new session`);
+
+    const cachedState = chargersStore.get(getChargerKey(chargerId, connectorId));
+    const pendingUserId = cachedState?.pendingUserId;
+    const pendingPresetAmount = cachedState?.pendingPresetAmount;
+
+    if (pendingUserId || pendingPresetAmount) {
+      console.log(`[STATUS] ${chargerId}#${connectorId}: Releasing stale pending start reservation`);
+      if (pendingUserId && pendingPresetAmount) {
+        try {
+          const walletService = await import("../../services/wallet.service.js");
+          await walletService.unlockFunds(pendingUserId, pendingPresetAmount);
+          console.log(`[STATUS] ${chargerId}#${connectorId}: Unlocked LKR ${pendingPresetAmount} for user ${pendingUserId}`);
+        } catch (error) {
+          console.error(`[STATUS] Failed to unlock stale pending funds for ${chargerId}#${connectorId}:`, error.message);
+        }
+      }
+      clearPendingStartWatchdog(chargerId, connectorId);
+      clearPendingStartState(chargerId, connectorId);
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
 import bookingService from "../../services/booking.service.js";
 import connectorLockService from "../../services/connectorLock.service.js";
+import { clearPendingStartWatchdog } from "../commands/remoteStartTransaction.js";
 import prisma from "../../config/db.js";
 import Decimal from "decimal.js";
 
@@ -129,6 +130,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
+
+  clearPendingStartWatchdog(chargerId, connectorId);
 
 
 
