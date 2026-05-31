@@ -13,6 +13,9 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
   },
+  user: {
+    findFirst: jest.fn(),
+  },
   $transaction: jest.fn(),
 };
 
@@ -148,6 +151,7 @@ describe("Wallet Service", () => {
     });
 
     it("should process top-up with optimistic locking", async () => {
+      mockPrisma.user.findFirst.mockResolvedValue({ id: "admin-123" });
       mockPrisma.ledger.findUnique.mockResolvedValue(null);
 
       const mockWallet = {
@@ -289,6 +293,45 @@ describe("Wallet Service", () => {
 
       expect(result.success).toBe(true);
       expect(result.newBalance).toBe("50.00");
+    });
+
+    it("should allow negative balance deduction when allowNegative is true", async () => {
+      mockPrisma.ledger.findUnique.mockResolvedValue(null);
+
+      const mockWallet = {
+        id: "wallet-123",
+        userId: "user-123",
+        balance: { toString: () => "10.00" },
+        version: 1,
+      };
+
+      const updatedWallet = {
+        ...mockWallet,
+        balance: { toString: () => "-40.00" },
+        version: 2,
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (fn) => {
+        const tx = {
+          wallet: {
+            findUnique: jest.fn().mockResolvedValue(mockWallet),
+            update: jest.fn().mockResolvedValue(updatedWallet),
+          },
+        };
+        return fn(tx);
+      });
+
+      const result = await walletService.deductForCharging({
+        userId: "user-123",
+        amount: 50,
+        transactionId: "tx-123",
+        idempotencyKey: "key-123",
+        energyWh: 1000,
+        allowNegative: true,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newBalance).toBe("-40.00");
     });
   });
 
