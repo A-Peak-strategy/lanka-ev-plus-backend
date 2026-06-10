@@ -179,6 +179,19 @@ router.post("/admin/settlements/:settlementId/reverse", requireAdmin, adminContr
 router.delete("/admin/settlements/:settlementId", requireAdmin, adminController.deleteSettlement);
 
 // ============================================
+// PAYOUTS
+// ============================================
+
+// Get all owners payout summary
+router.get("/admin/payouts/owners-summary", requireAdmin, adminController.getPayoutOwnersSummary);
+
+// Get detailed payout data for a specific owner
+router.get("/admin/payouts/owners/:ownerId", requireAdmin, adminController.getPayoutOwnerDetail);
+
+// Process a payout for an owner (deducts from wallet)
+router.post("/admin/payouts/owners/:ownerId/payout", requireAdmin, adminController.processPayoutForOwner);
+
+// ============================================
 // AUDIT LOGS
 // ============================================
 

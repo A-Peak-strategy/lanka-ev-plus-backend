@@ -1573,6 +1573,85 @@ export async function deletePricing(req, res) {
   }
 }
 
+// ============================================
+// PAYOUTS
+// ============================================
+
+/**
+ * Get all owners payout summary
+ * GET /api/admin/payouts/owners-summary
+ */
+export async function getPayoutOwnersSummary(req, res) {
+  try {
+    const summaries = await settlementService.getAllOwnersPayoutSummary();
+
+    res.json({
+      success: true,
+      data: summaries,
+      count: summaries.length,
+    });
+  } catch (error) {
+    console.error("Get payout owners summary error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get detailed payout data for a specific owner
+ * GET /api/admin/payouts/owners/:ownerId
+ */
+export async function getPayoutOwnerDetail(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const detail = await settlementService.getOwnerPayoutDetail(ownerId);
+
+    res.json({
+      success: true,
+      data: detail,
+    });
+  } catch (error) {
+    console.error("Get payout owner detail error:", error);
+    res.status(error.message === "Owner not found" ? 404 : 500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Process a payout for an owner (deducts from wallet)
+ * POST /api/admin/payouts/owners/:ownerId/payout
+ */
+export async function processPayoutForOwner(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const adminId = req.user?.id || "system";
+    const { amount, paymentRef, paymentMethod, paymentNotes } = req.body;
+
+    if (!amount || parseFloat(amount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Valid payout amount is required",
+      });
+    }
+
+    const result = await settlementService.processOwnerPayout(
+      ownerId,
+      { amount, paymentRef, paymentMethod, paymentNotes },
+      adminId
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      message: `Payout of LKR ${parseFloat(amount).toFixed(2)} processed successfully`,
+    });
+  } catch (error) {
+    console.error("Process payout error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
 export default {
   // Users
   createOwner,
@@ -1642,6 +1721,11 @@ export default {
   generateChargerQR,
   regenerateChargerQR,
   getChargerQR,
+
+  // Payouts
+  getPayoutOwnersSummary,
+  getPayoutOwnerDetail,
+  processPayoutForOwner,
 
   // Debug
   adminRemoteStart,
