@@ -71,6 +71,12 @@ const mockRemoteStartCommand = {
   clearPendingStartState: jest.fn(),
 };
 
+const mockWalletService = {
+  getAvailableBalance: jest.fn(),
+  lockFunds: jest.fn(),
+  unlockFunds: jest.fn(),
+};
+
 const mockStatus = {
   ACCEPTED: "Accepted",
   BLOCKED: "Blocked",
@@ -124,6 +130,8 @@ jest.unstable_mockModule("../../src/utils/generateTransactionId.js", () => ({
   generateTransactionId: jest.fn(() => "internal-tx-100"),
   initTransactionCounter: jest.fn(),
 }));
+
+jest.unstable_mockModule("../../src/services/wallet.service.js", () => mockWalletService);
 
 // Import the handlers after mocks are registered
 const { default: startTransaction } = await import("../../src/ocpp/handlers/startTransaction.js");
@@ -241,6 +249,96 @@ describe("OCPP Start/Stop Billing Flow", () => {
           status: "Blocked",
         },
       });
+    });
+
+    it("should reject startTransaction when the user wallet balance is positive but less than or equal to 100 LKR", async () => {
+      const ws = {};
+      const messageId = "msg-2b";
+      const chargerId = "charger-B";
+      const payload = {
+        connectorId: 1,
+        idTag: "UNKNOWN-456",
+        meterStart: 500,
+        timestamp: new Date().toISOString(),
+      };
+
+      mockBookingService.validateBookingForStart.mockResolvedValue({ allowed: true, bookingId: null, type: "WALKIN" });
+      mockPrisma.user.findFirst.mockResolvedValue({
+        id: "user-low-balance",
+        wallet: {
+          balance: 75.0,
+        },
+      });
+
+      await startTransaction(ws, messageId, chargerId, payload);
+
+      expect(mockSessionService.createSession).not.toHaveBeenCalled();
+      expect(mockMessageQueue.sendCallResult).toHaveBeenCalledWith(ws, messageId, {
+        transactionId: 0,
+        idTagInfo: {
+          status: "Blocked",
+        },
+      });
+    });
+
+    it("should dynamically assign a default preset amount and lock funds for a walk-in startTransaction if no pending preset amount exists", async () => {
+      const ws = {};
+      const messageId = "msg-2c";
+      const chargerId = "charger-C";
+      const payload = {
+        connectorId: 1,
+        idTag: "RFID-123",
+        meterStart: 1000,
+        timestamp: new Date().toISOString(),
+      };
+
+      mockBillingService.getPricingForCharger.mockResolvedValue({ pricePerKwh: 50 });
+      mockBookingService.validateBookingForStart.mockResolvedValue({ allowed: true, bookingId: null, type: "WALKIN" });
+      mockConnectorLockService.markChargingActive.mockResolvedValue({ acquired: true });
+      mockSessionService.createSession.mockResolvedValue({
+        session: {
+          id: 101,
+          transactionId: "TX-101",
+          meterStartWh: 1000,
+        },
+        duplicate: false,
+      });
+
+      // Mock user database resolution
+      mockPrisma.user.findFirst.mockResolvedValue({
+        id: "user-rfid",
+        wallet: {
+          balance: 500.00,
+        },
+      });
+
+      // Mock walletService
+      mockWalletService.getAvailableBalance.mockResolvedValue("500.00");
+      mockWalletService.lockFunds.mockResolvedValue({ success: true });
+
+      // No pending start state in memory (walk-in)
+      mockChargerStore.chargersStore.set("charger-C:1", {
+        pendingUserId: null,
+        pendingPresetAmount: null,
+      });
+
+      await startTransaction(ws, messageId, chargerId, payload);
+
+      expect(mockWalletService.getAvailableBalance).toHaveBeenCalledWith("user-rfid");
+      expect(mockWalletService.lockFunds).toHaveBeenCalledWith("user-rfid", "400.00"); // 500.00 - 100
+      expect(mockSessionService.createSession).toHaveBeenCalledWith(expect.objectContaining({
+        chargerId,
+        connectorId: 1,
+        transactionId: expect.any(String),
+        idTag: "RFID-123",
+        userId: "user-rfid",
+        meterStart: 1000,
+        presetAmount: "400.00",
+      }));
+      expect(mockMessageQueue.sendCallResult).toHaveBeenCalledWith(ws, messageId, expect.objectContaining({
+        transactionId: 101,
+        idTagInfo: expect.objectContaining({ status: mockStatus.ACCEPTED }),
+      }));
     });
   });
 

@@ -1,4 +1,5 @@
 import { chargersStore, getChargerKey } from "../services/chargerStore.service.js";
+import Decimal from "decimal.js";
 import { isChargerOnline, getConnectedChargerIds, getChargerMetadata } from "../ocpp/ocppServer.js";
 import { startChargingForUser } from "../ocpp/commands/remoteStartTransaction.js";
 import { stopChargingAtCharger, remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
@@ -353,37 +354,70 @@ export const startCharging = async (req, res, next) => {
       );
     }
 
-    // Lock wallet funds (if preset amount specified)
-    if (presetAmount && Number(presetAmount) > 0) {
-      try {
-        await walletService.lockFunds(userId, presetAmount);
+    // Lock wallet funds (preset amount is required and must keep a 100 LKR buffer)
+    if (presetAmount === undefined || presetAmount === null) {
+      throw new ValidationError(
+        "Preset amount is required to start charging",
+        "PRESET_AMOUNT_REQUIRED"
+      );
+    }
 
-        lockedAmount = Number(presetAmount);
+    const presetAmountNum = Number(presetAmount);
+    if (isNaN(presetAmountNum) || presetAmountNum <= 0) {
+      throw new ValidationError(
+        "Preset amount must be a positive number",
+        "INVALID_PRESET_AMOUNT"
+      );
+    }
 
-        console.log(
-          `[START] Locked LKR ${lockedAmount} for user ${userId} on charger ${chargerId}`
-        );
-      } catch (lockError) {
-        const insufficientBalance =
-          lockError.name === "InsufficientBalanceError" ||
-          lockError.message?.includes("Insufficient");
+    const availableBalance = await walletService.getAvailableBalance(userId);
+    const availableBalanceDecimal = new Decimal(availableBalance);
+    const maxAllowedPreset = availableBalanceDecimal.minus(100);
 
-        if (insufficientBalance) {
-          const availableBalance =
-            await walletService.getAvailableBalance(userId);
+    if (maxAllowedPreset.lte(0)) {
+      return res.status(400).json({
+        success: false,
+        error: "Insufficient balance",
+        code: "INSUFFICIENT_BALANCE",
+        message: `Your wallet balance (LKR ${availableBalanceDecimal.toFixed(2)}) is insufficient. A minimum buffer of LKR 100.00 must remain in your wallet to start charging. Please top up.`,
+        availableBalance: availableBalanceDecimal.toFixed(2),
+        requestedAmount: presetAmountNum,
+      });
+    }
 
-          return res.status(400).json({
-            success: false,
-            error: "Insufficient balance",
-            code: "INSUFFICIENT_BALANCE",
-            message: `Your wallet balance (LKR ${availableBalance}) is insufficient for the requested amount (LKR ${presetAmount}). Please top up.`,
-            availableBalance,
-            requestedAmount: Number(presetAmount),
-          });
-        }
+    if (new Decimal(presetAmountNum).gt(maxAllowedPreset)) {
+      return res.status(400).json({
+        success: false,
+        error: "Insufficient balance",
+        code: "INSUFFICIENT_BALANCE",
+        message: `Your wallet balance (LKR ${availableBalanceDecimal.toFixed(2)}) is insufficient to support a budget of LKR ${presetAmountNum.toFixed(2)}. A minimum buffer of LKR 100.00 must remain. Based on your current balance, you can allocate up to LKR ${maxAllowedPreset.toFixed(2)} for charging.`,
+        availableBalance: availableBalanceDecimal.toFixed(2),
+        requestedAmount: presetAmountNum,
+      });
+    }
 
-        throw lockError;
+    try {
+      await walletService.lockFunds(userId, presetAmountNum);
+      lockedAmount = presetAmountNum;
+      console.log(
+        `[START] Locked LKR ${lockedAmount} for user ${userId} on charger ${chargerId}`
+      );
+    } catch (lockError) {
+      const insufficientBalance =
+        lockError.name === "InsufficientBalanceError" ||
+        lockError.message?.includes("Insufficient");
+
+      if (insufficientBalance) {
+        return res.status(400).json({
+          success: false,
+          error: "Insufficient balance",
+          code: "INSUFFICIENT_BALANCE",
+          message: `Your wallet balance (LKR ${availableBalance}) is insufficient for the requested amount (LKR ${presetAmountNum}). Please top up.`,
+          availableBalance,
+          requestedAmount: presetAmountNum,
+        });
       }
+      throw lockError;
     }
 
     // Send RemoteStartTransaction

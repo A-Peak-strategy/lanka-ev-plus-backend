@@ -207,11 +207,11 @@ export function queueStopTransactionRetry(chargerId, transactionIdOrInternal, at
 export async function remoteStopTransaction(chargerId, transactionIdOrInternal) {
   const result = await remoteStopTransactionDirect(chargerId, transactionIdOrInternal);
 
-  // If initial stop fails, schedule the optimized watchdog
-  if (!result.success) {
-    console.log(`[CMD] Remote stop failed initially (${result.status || 'Error'}). Registering background watchdog for session ${transactionIdOrInternal} on charger ${chargerId}`);
-    queueStopTransactionRetry(chargerId, transactionIdOrInternal);
-  }
+  // ALWAYS queue a watchdog to confirm that the session actually ended in the database.
+  // The watchdog will check session.endedAt, and if it's still active (not stopped),
+  // it will retry the stop command.
+  console.log(`[CMD] Registering background watchdog for session ${transactionIdOrInternal} on charger ${chargerId} to confirm stop`);
+  queueStopTransactionRetry(chargerId, transactionIdOrInternal);
 
   return result;
 }
