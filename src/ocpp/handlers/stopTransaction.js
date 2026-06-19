@@ -88,6 +88,7 @@ async function processStop(ws, messageId, chargerId, activeTransactionId, connec
         chargerId,
         transactionId: activeTransactionId,
         currentMeterWh: meterStop,
+        isFinal: true,
       });
     } catch (billingError) {
       // Log but continue - don't fail stop transaction for billing errors
@@ -238,6 +239,7 @@ async function processTransactionData(chargerId, transactionId, transactionData)
           chargerId,
           transactionId,
           currentMeterWh: meterWh,
+          isFinal: true,
         });
       } catch (error) {
         console.error(`[STOP] Historical billing error:`, error.message);

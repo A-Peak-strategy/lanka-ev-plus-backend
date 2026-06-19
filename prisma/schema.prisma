@@ -166,6 +166,7 @@ model Station {
   address         String
   latitude        Decimal   @db.Decimal(10, 8)
   longitude       Decimal   @db.Decimal(11, 8)
+  googleMapsLink  String?
   
   // Owner
   ownerId         String
@@ -711,4 +712,22 @@ model ChargerRuntimeState {
   @@index([status])
   @@index([connectionStatus])
   @@index([transactionId])
+}
+model AppConfig {
+  id                    Int      @id @default(1)
+
+  latestAndroidVersion  String
+  latestIosVersion      String
+  minAndroidVersion     String
+  minIosVersion         String
+
+  androidStoreUrl       String?
+  iosStoreUrl           String?
+
+  forceUpdate           Boolean  @default(false)
+  maintenanceMode       Boolean  @default(false)
+  maintenanceMessage    String?
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 }

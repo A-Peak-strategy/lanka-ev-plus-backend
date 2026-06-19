@@ -124,6 +124,7 @@ export async function processMeterValuesBilling({
   chargerId,
   transactionId,
   currentMeterWh,
+  isFinal = false,
 }) {
   // Get session
   const session = await prisma.chargingSession.findUnique({
@@ -211,6 +212,7 @@ export async function processMeterValuesBilling({
     energyWh: incrementalWh,
     chargerId,
     pricePerKwh: pricePerKwh.toFixed(2),
+    allowNegative: isFinal,
   });
 
   // Note: deductForCharging no longer checks for duplicates via ledger.

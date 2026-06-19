@@ -230,6 +230,7 @@ export async function deductForCharging({
   energyWh,
   chargerId,
   pricePerKwh,
+  allowNegative = false,
 }) {
   const amountDecimal = new Decimal(amount);
 
@@ -261,7 +262,7 @@ export async function deductForCharging({
         const currentBalance = new Decimal(wallet.balance.toString());
 
         // Check if sufficient balance
-        if (currentBalance.lt(amountDecimal)) {
+        if (!allowNegative && currentBalance.lt(amountDecimal)) {
           // Cannot deduct - insufficient funds
           return {
             success: false,
