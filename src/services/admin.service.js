@@ -87,11 +87,17 @@ function makeOcppIdTag() {
  * @returns {Promise<object[]>}
  */
 export async function getUsers(filters = {}) {
-  const { role, isActive, limit = 50, offset = 0 } = filters;
+  const { role, isActive, limit = 50, offset = 0, search } = filters;
 
   const where = {};
   if (role) where.role = role;
   if (isActive !== undefined) where.isActive = isActive;
+  if (search) {
+    where.OR = [
+      { email: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } },
+    ];
+  }
 
   return prisma.user.findMany({
     where,
@@ -453,6 +459,7 @@ export async function createStation(data, adminId) {
     ownerId,
     pricingId,
     bookingEnabled = true,
+    googleMapsLink,
   } = data;
 
   // Validate owner
@@ -475,6 +482,7 @@ export async function createStation(data, adminId) {
       ownerId,
       pricingId,
       bookingEnabled,
+      googleMapsLink: googleMapsLink || null,
     },
   });
 

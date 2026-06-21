@@ -54,13 +54,14 @@ export async function createOwner(req, res) {
  */
 export async function getUsers(req, res) {
   try {
-    const { role, isActive, limit, offset } = req.query;
+    const { role, isActive, limit, offset, search } = req.query;
 
     const users = await adminService.getUsers({
       role,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
       limit: parseInt(limit) || 50,
       offset: parseInt(offset) || 0,
+      search,
     });
 
     res.json({
@@ -1001,7 +1002,7 @@ export async function updateStation(req, res) {
     const { stationId } = req.params;
     const adminId = req.user?.id || "system";
 
-    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled"];
+    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled", "googleMapsLink"];
     const data = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) {
@@ -1404,6 +1405,16 @@ export async function adminSetWalletBalance(req, res) {
       });
     }
 
+    // Determine the nature of the adjustment for proper naming
+    let adjustmentDescription = "";
+    if (parsedBalance > previousBalance) {
+      adjustmentDescription = `Admin adding: balance increased from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`;
+    } else if (parsedBalance < previousBalance) {
+      adjustmentDescription = `Admin reduction: balance decreased from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`;
+    } else {
+      adjustmentDescription = `Admin override: balance set from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`;
+    }
+
     // Update wallet balance and create ledger entry in a transaction
     const [updatedWallet, ledgerEntry] = await prisma.$transaction([
       prisma.wallet.update({
@@ -1416,12 +1427,12 @@ export async function adminSetWalletBalance(req, res) {
       prisma.ledger.create({
         data: {
           userId,
-          type: "REFUND", // Using REFUND type for admin adjustments
+          type: parsedBalance < previousBalance ? "CHARGE_DEBIT" : "REFUND", // Use appropriate ledger type
           amount: Math.abs(parsedBalance - previousBalance),
           balanceAfter: parsedBalance,
           referenceId: `ADMIN_DEBUG_${Date.now()}`,
           referenceType: "ADMIN_ADJUSTMENT",
-          description: reason || `Admin debug: balance set from ${previousBalance.toFixed(2)} to ${parsedBalance.toFixed(2)}`,
+          description: reason || adjustmentDescription,
           idempotencyKey: `admin_set_balance_${userId}_${uuidv4()}`,
         },
       }),
