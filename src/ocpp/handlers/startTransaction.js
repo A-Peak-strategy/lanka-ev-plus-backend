@@ -7,8 +7,10 @@ import sessionService from "../../services/session.service.js";
 import billingService from "../../services/billing.service.js";
 import bookingService from "../../services/booking.service.js";
 import connectorLockService from "../../services/connectorLock.service.js";
+import { clearPendingStartWatchdog } from "../commands/remoteStartTransaction.js";
 import prisma from "../../config/db.js";
 import Decimal from "decimal.js";
+import * as walletService from "../../services/wallet.service.js";
 
 /**
  * OCPP StartTransaction Handler
@@ -90,6 +92,27 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     // Still allow - lock is for booking system, not hard requirement
   }
 
+  // Resolve presetAmount (assign default for walk-ins/RFID starts)
+  let sessionPresetAmount = pendingPresetAmount || null;
+
+  if (userId && !sessionPresetAmount) {
+    try {
+      const availableBalance = await walletService.getAvailableBalance(userId);
+      const availableBalanceDecimal = new Decimal(availableBalance);
+      const maxAllowedPreset = availableBalanceDecimal.minus(100);
+
+      if (maxAllowedPreset.gt(0)) {
+        await walletService.lockFunds(userId, maxAllowedPreset.toFixed(2));
+        sessionPresetAmount = maxAllowedPreset.toFixed(2);
+        console.log(`[START] Walk-in session: dynamically assigned and locked default preset LKR ${sessionPresetAmount} for user ${userId}`);
+      } else {
+        console.log(`[START] Walk-in session: user ${userId} available balance LKR ${availableBalance} too low for default preset.`);
+      }
+    } catch (budgetErr) {
+      console.error(`[START] Failed to calculate/lock walk-in preset budget:`, budgetErr.message);
+    }
+  }
+
   // Create session in database
   // session.id (autoincrement integer) will be used as the OCPP transactionId
   const { session, duplicate } = await sessionService.createSession({
@@ -101,7 +124,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     meterStart,
     timestamp: startTime,
     pricePerKwh: pricing?.pricePerKwh,
-    presetAmount: pendingPresetAmount || null,
+    presetAmount: sessionPresetAmount,
   });
 
 
@@ -129,6 +152,8 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });
+
+  clearPendingStartWatchdog(chargerId, connectorId);
 
 
 
@@ -322,11 +347,11 @@ async function checkUserAuthorization(idTag) {
 
   const balance = new Decimal(wallet.balance.toString());
 
-  // Minimum wallet balance is 0 - if balance is 0, user cannot proceed
-  if (balance.lte(0)) {
+  // Minimum wallet balance is LKR 100.00 to start charging
+  if (balance.lte(100)) {
     return {
       status: AuthorizationStatus.BLOCKED,
-      reason: "Insufficient wallet balance. Please top up your wallet.",
+      reason: "Wallet balance must be greater than LKR 100.00 to start charging. Please top up your wallet.",
     };
   }
 

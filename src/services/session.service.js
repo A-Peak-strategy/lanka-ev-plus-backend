@@ -45,6 +45,11 @@ export async function createSession(data) {
     return { session: existing, duplicate: true };
   }
 
+  if (!userId){
+    console.log(`[ERROR] No userId provided for session ${transactionId}`);
+    return { session: null, duplicate: false, error: "No userId provided" };
+  }
+
   // Get connector record if exists
   let connector = null;
   if (connectorId) {

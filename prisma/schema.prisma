@@ -166,6 +166,7 @@ model Station {
   address         String
   latitude        Decimal   @db.Decimal(10, 8)
   longitude       Decimal   @db.Decimal(11, 8)
+  googleMapsLink  String?
   
   // Owner
   ownerId         String

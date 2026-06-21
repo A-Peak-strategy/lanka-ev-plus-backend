@@ -1,6 +1,7 @@
 import { sendCall } from "../messageQueue.js";
 import { CStoCPAction, RemoteStartStopStatus } from "../ocppConstants.js";
 import { getChargerConnection, isChargerOnline } from "../ocppServer.js";
+import { chargersStore, getChargerKey } from "../../services/chargerStore.service.js";
 
 /**
  * RemoteStartTransaction Command
@@ -113,7 +114,6 @@ export async function startChargingForUser(params) {
   // IMPORTANT: We use the Map directly because updateChargerState() writes
   // to the DB via chargerRuntimeState which has a field whitelist that
   // silently drops unknown fields like pendingUserId.
-  const { chargersStore, getChargerKey } = await import("../../services/chargerStore.service.js");
   const key = getChargerKey(chargerId, connectorId);
   const currentState = chargersStore.get(key) || {};
   chargersStore.set(key, {
@@ -124,10 +124,83 @@ export async function startChargingForUser(params) {
 
   console.log(`[CMD] Stored pendingUserId for ${chargerId}: ${userId}${presetAmount ? `, presetAmount: LKR ${presetAmount}` : ''}`);
 
-  return remoteStartTransaction(chargerId, {
+  const result = await remoteStartTransaction(chargerId, {
     idTag,
     connectorId,
   });
+
+  if (!result.success) {
+    clearPendingStartWatchdog(chargerId, connectorId);
+    clearPendingStartState(chargerId, connectorId);
+  }
+
+  if (result.success) {
+    schedulePendingStartWatchdog(chargerId, connectorId, userId, presetAmount);
+  }
+
+  return result;
+}
+
+const startWatchdogs = new Map();
+
+function getWatchdogKey(chargerId, connectorId) {
+  return `${chargerId}:${connectorId}`;
+}
+
+export function clearPendingStartWatchdog(chargerId, connectorId) {
+  const key = getWatchdogKey(chargerId, connectorId);
+  const timeout = startWatchdogs.get(key);
+  if (timeout) {
+    clearTimeout(timeout);
+    startWatchdogs.delete(key);
+  }
+}
+
+export function clearPendingStartState(chargerId, connectorId) {
+  const key = getChargerKey(chargerId, connectorId);
+  const currentState = chargersStore.get(key);
+  if (!currentState) return;
+
+  const nextState = {
+    ...currentState,
+    pendingUserId: null,
+    pendingPresetAmount: null,
+  };
+
+  chargersStore.set(key, nextState);
+}
+
+export function schedulePendingStartWatchdog(chargerId, connectorId, userId, presetAmount) {
+  const key = getWatchdogKey(chargerId, connectorId);
+  clearPendingStartWatchdog(chargerId, connectorId);
+
+  const timeout = setTimeout(async () => {
+    startWatchdogs.delete(key);
+
+    const cacheKey = getChargerKey(chargerId, connectorId);
+    const cachedState = chargersStore.get(cacheKey);
+
+    if (!cachedState?.pendingUserId || cachedState.pendingUserId !== userId) {
+      return;
+    }
+
+    if (!cachedState.pendingPresetAmount) {
+      clearPendingStartState(chargerId, connectorId);
+      return;
+    }
+
+    try {
+      const walletService = await import("../../services/wallet.service.js");
+      await walletService.unlockFunds(userId, cachedState.pendingPresetAmount);
+      console.log(`[START WATCHDOG] Released locked funds for ${chargerId}#${connectorId} after stale remote start`);
+    } catch (error) {
+      console.error(`[START WATCHDOG] Failed to release locked funds for ${chargerId}#${connectorId}:`, error.message);
+    }
+
+    clearPendingStartState(chargerId, connectorId);
+  }, 90000);
+
+  startWatchdogs.set(key, timeout);
 }
 
 export default {
