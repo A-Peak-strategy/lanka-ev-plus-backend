@@ -85,12 +85,6 @@ server.listen(PORT, async () => {
   await startWorkers();
 });
 
-// Periodic charger sync to database
-setInterval(() => {
-  chargerStore.forEach((_, chargerId) => {
-    syncChargerToDb(chargerId);
-  });
-}, 60000); // every 60 sec
 
 // Graceful shutdown
 process.on("SIGTERM", () => {

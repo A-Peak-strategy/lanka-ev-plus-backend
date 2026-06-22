@@ -7,15 +7,24 @@ import {
 
 const chargersStore = new Map();
 
+/**
+ * Helper to generate consistent keys for the in-memory store
+ */
+export function getChargerKey(chargerId, connectorId = 1) {
+  return `${chargerId}:${parseInt(connectorId)}`;
+}
+
 // READ: cache -> DB fallback
-export async function getChargerState(chargerId) {
-  const cached = chargersStore.get(chargerId);
+export async function getChargerState(chargerId, connectorId = 1) {
+  const cId = parseInt(connectorId);
+  const key = getChargerKey(chargerId, cId);
+  const cached = chargersStore.get(key);
   if (cached) return cached;
 
-  const dbState = await getChargerStateAPI(chargerId);
+  const dbState = await getChargerStateAPI(chargerId, cId);
 
   if (dbState) {
-    chargersStore.set(chargerId, dbState);
+    chargersStore.set(key, dbState);
   }
 
   return dbState; // ✅ return DB if cache miss
@@ -23,24 +32,35 @@ export async function getChargerState(chargerId) {
 
 // WRITE: DB first -> cache MERGE (preserve non-DB fields like pendingUserId)
 export async function updateChargerState(chargerId, update) {
+  const connectorId = parseInt(update.connectorId !== undefined ? update.connectorId : 1);
   const updated = await updateChargerStateAPI(chargerId, update);
-  const existing = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, { ...existing, ...updated });
+  
+  const key = getChargerKey(chargerId, connectorId);
+  const existing = chargersStore.get(key) || {};
+  chargersStore.set(key, { ...existing, ...updated });
+  
   return { ...existing, ...updated };
 }
 
 // WRITE meter: DB first -> cache MERGE
-export async function updateMeterValue(chargerId, meterWh) {
-  const updated = await updateMeterValueAPI(chargerId, meterWh);
-  const existing = chargersStore.get(chargerId) || {};
-  chargersStore.set(chargerId, { ...existing, ...updated });
+export async function updateMeterValue(chargerId, meterWh, connectorId = 1) {
+  const cId = parseInt(connectorId);
+  const updated = await updateMeterValueAPI(chargerId, meterWh, cId);
+  
+  const key = getChargerKey(chargerId, cId);
+  const existing = chargersStore.get(key) || {};
+  chargersStore.set(key, { ...existing, ...updated });
+  
   return { ...existing, ...updated };
 }
 
 export async function getAllChargerStates() {
   const rows = await getAllChargerStatesAPI();
-  // hydrate cache (optional)
-  for (const st of rows) chargersStore.set(st.chargerId, st);
+  // hydrate cache
+  for (const st of rows) {
+    const key = getChargerKey(st.chargerId, st.connectorId);
+    chargersStore.set(key, st);
+  }
   return rows;
 }
 

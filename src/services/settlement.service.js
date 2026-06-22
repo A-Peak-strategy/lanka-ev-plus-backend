@@ -127,20 +127,20 @@ export async function recordSessionEarning({
  * @returns {Promise<object>}
  */
 export async function createSettlement(ownerId, periodStart, periodEnd) {
-  // Check for existing settlement in this period
-  const existing = await prisma.settlement.findFirst({
+  // Get IDs of sessions that are already attached to any non-FAILED settlement
+  const alreadySettledItems = await prisma.settlementItem.findMany({
     where: {
-      ownerId,
-      periodStart: { gte: periodStart },
-      periodEnd: { lte: periodEnd },
+      settlement: {
+        ownerId,
+        status: { not: "FAILED" },
+      },
     },
+    select: { sessionId: true },
   });
+  const settledSessionIds = alreadySettledItems.map((item) => item.sessionId);
 
-  if (existing) {
-    throw new Error("Settlement already exists for this period");
-  }
-
-  // Get all completed sessions for this owner's stations in the period
+  // Get all completed sessions for this owner's stations in the period,
+  // excluding sessions that are already part of a non-FAILED settlement
   const sessions = await prisma.chargingSession.findMany({
     where: {
       endedAt: { not: null },
@@ -150,6 +150,7 @@ export async function createSettlement(ownerId, periodStart, periodEnd) {
           ownerId,
         },
       },
+      ...(settledSessionIds.length > 0 ? { id: { notIn: settledSessionIds } } : {}),
     },
     include: {
       charger: {
@@ -161,10 +162,10 @@ export async function createSettlement(ownerId, periodStart, periodEnd) {
   });
 
   if (sessions.length === 0) {
-    return null; // No sessions to settle
+    return null; // No unsettled sessions in this period
   }
 
-  // Calculate totals
+  // Calculate totals from sessions
   let totalEarnings = new Decimal(0);
   let totalCommission = new Decimal(0);
   let totalEnergyWh = 0;
@@ -189,7 +190,32 @@ export async function createSettlement(ownerId, periodStart, periodEnd) {
     };
   });
 
-  const netPayout = totalEarnings;
+  // Deduct any amounts already paid out (manual ad-hoc payments or previous batch payments)
+  // so the new settlement only covers what's still owed
+  const paidSettlements = await prisma.settlement.findMany({
+    where: { ownerId, status: "PAID" },
+  });
+  let alreadyPaidOut = new Decimal(0);
+  for (const ps of paidSettlements) {
+    alreadyPaidOut = alreadyPaidOut.plus(new Decimal(ps.netPayout.toString()));
+  }
+
+  // Also account for any existing PENDING settlements (to avoid overlap)
+  const pendingSettlements = await prisma.settlement.findMany({
+    where: { ownerId, status: "PENDING" },
+  });
+  let alreadyPending = new Decimal(0);
+  for (const ps of pendingSettlements) {
+    alreadyPending = alreadyPending.plus(new Decimal(ps.netPayout.toString()));
+  }
+
+  // netPayout = what these sessions earned - what's already been paid/pending
+  const netPayout = totalEarnings.minus(alreadyPaidOut).minus(alreadyPending);
+
+  if (netPayout.lte(0)) {
+    console.log(`[SETTLEMENT] No payout needed for owner ${ownerId}: sessions earned ${totalEarnings.toFixed(2)}, already paid ${alreadyPaidOut.toFixed(2)}, already pending ${alreadyPending.toFixed(2)}`);
+    return null;
+  }
 
   // Create settlement with items in a transaction
   const settlement = await prisma.$transaction(async (tx) => {
@@ -204,6 +230,7 @@ export async function createSettlement(ownerId, periodStart, periodEnd) {
         sessionCount: sessions.length,
         totalEnergyWh,
         status: "PENDING",
+        paymentNotes: alreadyPaidOut.gt(0) ? `Adjusted: LKR ${alreadyPaidOut.toFixed(2)} already paid out` : null,
       },
     });
 
@@ -230,22 +257,37 @@ export async function createSettlement(ownerId, periodStart, periodEnd) {
 }
 
 /**
- * Generate bi-weekly settlements for all owners
+ * Generate settlements for all owners
  * 
- * Typically called by a scheduled job every 2 weeks
+ * Accepts optional custom date range from the admin panel.
+ * Falls back to the last 14-day period if no dates are provided.
  * 
+ * @param {string|Date} [customStart] - Custom period start date
+ * @param {string|Date} [customEnd] - Custom period end date
  * @returns {Promise<object[]>}
  */
-export async function generateBiWeeklySettlements() {
-  // Calculate the last bi-weekly period
-  const now = new Date();
-  const periodEnd = new Date(now);
-  periodEnd.setDate(periodEnd.getDate() - 1); // End yesterday
-  periodEnd.setHours(23, 59, 59, 999);
+export async function generateBiWeeklySettlements(customStart, customEnd) {
+  let periodStart, periodEnd;
 
-  const periodStart = new Date(periodEnd);
-  periodStart.setDate(periodStart.getDate() - 13); // 14 days total
-  periodStart.setHours(0, 0, 0, 0);
+  if (customStart && customEnd) {
+    // Use the admin-provided dates
+    periodStart = new Date(customStart);
+    periodStart.setHours(0, 0, 0, 0);
+    periodEnd = new Date(customEnd);
+    periodEnd.setHours(23, 59, 59, 999);
+  } else {
+    // Default: last 14-day period ending yesterday
+    const now = new Date();
+    periodEnd = new Date(now);
+    periodEnd.setDate(periodEnd.getDate() - 1);
+    periodEnd.setHours(23, 59, 59, 999);
+
+    periodStart = new Date(periodEnd);
+    periodStart.setDate(periodStart.getDate() - 13);
+    periodStart.setHours(0, 0, 0, 0);
+  }
+
+  console.log(`[SETTLEMENT] Generating settlements for period: ${periodStart.toISOString()} to ${periodEnd.toISOString()}`);
 
   // Get all active owners with stations
   const owners = await prisma.user.findMany({
@@ -273,7 +315,7 @@ export async function generateBiWeeklySettlements() {
     }
   }
 
-  return { settlements, errors };
+  return { settlements, errors, periodStart, periodEnd };
 }
 
 // ============================================
@@ -419,7 +461,7 @@ export async function getSettlements(filters = {}) {
     if (endDate) where.periodStart.lte = new Date(endDate);
   }
 
-  return prisma.settlement.findMany({
+  const settlements = await prisma.settlement.findMany({
     where,
     include: {
       items: {
@@ -430,6 +472,19 @@ export async function getSettlements(filters = {}) {
     take: limit,
     skip: offset,
   });
+
+  // Enrich with owner names
+  const ownerIds = [...new Set(settlements.map((s) => s.ownerId))];
+  const owners = await prisma.user.findMany({
+    where: { id: { in: ownerIds } },
+    select: { id: true, name: true, email: true },
+  });
+  const ownerMap = Object.fromEntries(owners.map((o) => [o.id, o]));
+
+  return settlements.map((s) => ({
+    ...s,
+    owner: ownerMap[s.ownerId] || { name: null, email: null },
+  }));
 }
 
 /**
@@ -630,6 +685,20 @@ export async function getOwnerEarningsByStation(ownerId, options = {}) {
       _count: { id: true },
     });
 
+    // Calculate unpaid usage: sessions with no userId (admin/debug starts)
+    const unpaidAgg = await prisma.chargingSession.aggregate({
+      where: {
+        ...aggWhere,
+        userId: null,
+      },
+      _sum: {
+        totalCost: true,
+      },
+    });
+
+    const grossRevenue = new Decimal(agg._sum.totalCost?.toString() || "0");
+    const unpaidUsage = new Decimal(unpaidAgg._sum.totalCost?.toString() || "0");
+
     stationEarnings.push({
       stationId: station.id,
       stationName: station.name,
@@ -637,7 +706,8 @@ export async function getOwnerEarningsByStation(ownerId, options = {}) {
       chargerCount: chargerIds.length,
       totalSessions: agg._count.id,
       totalEnergyKwh: ((agg._sum.energyUsedWh || 0) / 1000).toFixed(2),
-      grossRevenue: agg._sum.totalCost?.toString() || "0.00",
+      grossRevenue: grossRevenue.toFixed(2),
+      unpaidUsage: unpaidUsage.toFixed(2),
       totalCommission: agg._sum.commission?.toString() || "0.00",
       netEarnings: agg._sum.ownerEarning?.toString() || "0.00",
       isActive: station.isActive,
@@ -673,6 +743,38 @@ export async function recordOwnerPayment(ownerId, paymentDetails, adminId) {
 
   // Create settlement + mark paid in one transaction
   const settlement = await prisma.$transaction(async (tx) => {
+    // Auto-cancel any PENDING settlements for this owner to prevent
+    // double-subtraction from the remaining balance
+    const pendingSettlements = await tx.settlement.findMany({
+      where: { ownerId, status: "PENDING" },
+    });
+
+    if (pendingSettlements.length > 0) {
+      await tx.settlement.updateMany({
+        where: { ownerId, status: "PENDING" },
+        data: {
+          status: "FAILED",
+          paymentNotes: "Auto-cancelled: superseded by manual payment",
+        },
+      });
+
+      // Log each cancellation for audit trail
+      for (const ps of pendingSettlements) {
+        await tx.adminAuditLog.create({
+          data: {
+            adminId,
+            action: "AUTO_CANCEL_PENDING_SETTLEMENT",
+            targetType: "SETTLEMENT",
+            targetId: ps.id,
+            previousValue: JSON.stringify({ status: "PENDING", netPayout: ps.netPayout.toString() }),
+            newValue: JSON.stringify({ status: "FAILED", reason: "Superseded by manual payment" }),
+          },
+        });
+      }
+
+      console.log(`[SETTLEMENT] Auto-cancelled ${pendingSettlements.length} PENDING settlement(s) for owner ${ownerId} due to manual payment`);
+    }
+
     const created = await tx.settlement.create({
       data: {
         ownerId,
@@ -709,6 +811,161 @@ export async function recordOwnerPayment(ownerId, paymentDetails, adminId) {
   return settlement;
 }
 
+/**
+ * Reverse a manual owner payment (admin action)
+ * Only allows reversing PAID settlements with sessionCount = 0 (manual payments)
+ * 
+ * @param {string} settlementId
+ * @param {string} reason
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function reverseOwnerPayment(settlementId, reason, adminId) {
+  const settlement = await prisma.settlement.findUnique({
+    where: { id: settlementId },
+  });
+
+  if (!settlement) {
+    throw new Error("Settlement not found");
+  }
+
+  if (settlement.status !== "PAID") {
+    throw new Error("Can only reverse PAID settlements");
+  }
+
+  if (settlement.sessionCount > 0) {
+    throw new Error("Cannot reverse a batch settlement. Use 'Mark as Failed' for batch settlements.");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const reversed = await tx.settlement.update({
+      where: { id: settlementId },
+      data: {
+        status: "FAILED",
+        paymentNotes: `REVERSED: ${reason}. Original: ${settlement.paymentNotes || 'Manual payment'}`,
+      },
+    });
+
+    await tx.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "REVERSE_OWNER_PAYMENT",
+        targetType: "SETTLEMENT",
+        targetId: settlementId,
+        previousValue: JSON.stringify({
+          status: "PAID",
+          netPayout: settlement.netPayout.toString(),
+          paymentRef: settlement.paymentRef,
+        }),
+        newValue: JSON.stringify({
+          status: "FAILED",
+          reason,
+        }),
+      },
+    });
+
+    return reversed;
+  });
+
+  console.log(`[SETTLEMENT] Reversed manual payment ${settlementId}: LKR ${settlement.netPayout} for owner ${settlement.ownerId}`);
+
+  return updated;
+}
+
+/**
+ * Delete a settlement (admin action)
+ * Only allows deleting FAILED settlements
+ * 
+ * @param {string} settlementId
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function deleteSettlement(settlementId, adminId) {
+  const settlement = await prisma.settlement.findUnique({
+    where: { id: settlementId },
+    include: { items: true },
+  });
+
+  if (!settlement) {
+    throw new Error("Settlement not found");
+  }
+
+  if (settlement.status !== "FAILED") {
+    throw new Error("Can only delete FAILED settlements. Mark it as failed first.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Delete settlement items first (foreign key constraint)
+    if (settlement.items.length > 0) {
+      await tx.settlementItem.deleteMany({
+        where: { settlementId },
+      });
+    }
+
+    // Delete the settlement
+    await tx.settlement.delete({
+      where: { id: settlementId },
+    });
+
+    // Audit log
+    await tx.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "DELETE_SETTLEMENT",
+        targetType: "SETTLEMENT",
+        targetId: settlementId,
+        previousValue: JSON.stringify({
+          status: settlement.status,
+          netPayout: settlement.netPayout.toString(),
+          ownerId: settlement.ownerId,
+          sessionCount: settlement.sessionCount,
+        }),
+      },
+    });
+  });
+
+  console.log(`[SETTLEMENT] Deleted FAILED settlement ${settlementId} for owner ${settlement.ownerId}`);
+
+  return { success: true, deletedId: settlementId };
+}
+
+/**
+ * Get payment history for an owner
+ * Returns all settlements (PAID, PENDING, FAILED) ordered by date
+ * 
+ * @param {string} ownerId
+ * @returns {Promise<object[]>}
+ */
+export async function getOwnerPaymentHistory(ownerId) {
+  const settlements = await prisma.settlement.findMany({
+    where: { ownerId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      periodStart: true,
+      periodEnd: true,
+      totalEarnings: true,
+      totalCommission: true,
+      netPayout: true,
+      sessionCount: true,
+      status: true,
+      paidAt: true,
+      paymentRef: true,
+      paymentMethod: true,
+      paymentNotes: true,
+      createdAt: true,
+    },
+  });
+
+  return settlements.map((s) => ({
+    ...s,
+    totalEarnings: s.totalEarnings.toString(),
+    totalCommission: s.totalCommission.toString(),
+    netPayout: s.netPayout.toString(),
+    type: s.sessionCount === 0 ? "MANUAL" : "BATCH",
+  }));
+}
+
 export default {
   calculateEarnings,
   recordSessionEarning,
@@ -722,5 +979,8 @@ export default {
   getOwnerEarningsSummary,
   getOwnerEarningsByStation,
   recordOwnerPayment,
+  reverseOwnerPayment,
+  deleteSettlement,
+  getOwnerPaymentHistory,
 };
 

@@ -43,15 +43,15 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
     return;
   }
 
-  // Get charger state - use internal string transactionId for billing
-  const chargerState = await getChargerState(chargerId);
+  // Get charger state for this specific connector
+  const chargerState = await getChargerState(chargerId, connectorId);
 
   const sessionId = chargerState?.ocppTransactionId; // ChargingSession.id (OCPP)
-  const txId = chargerState?.transactionId ?? chargerState?.ocppTransactionId ?? null; // ✅ fallback to ocppTransactionId
+  const txId = chargerState?.transactionId ?? chargerState?.ocppTransactionId ?? null; 
 
 
   if (!sessionId || !txId) {
-    console.warn(`[METER] ${chargerId}: No active session (sessionId=${sessionId}, txId=${txId})`);
+    console.warn(`[METER] ${chargerId}#${connectorId}: No active session (sessionId=${sessionId}, txId=${txId})`);
     sendCallResult(ws, messageId, {});
     return;
   }
@@ -61,7 +61,7 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
   const readings = extractMeterReadings(meterValue);
 
   if (!readings.energy && readings.energy !== 0) {
-    console.warn(`[METER] ${chargerId}: No energy reading found`);
+    console.warn(`[METER] ${chargerId}#${connectorId}: No energy reading found`);
     sendCallResult(ws, messageId, {});
     return;
   }
@@ -81,19 +81,20 @@ export default async function meterValues(ws, messageId, chargerId, payload) {
       });
       sessionMeterStart = dbSession?.meterStartWh ?? energyWh;
       // Also update chargerState so future calls don't need the DB lookup
-      await updateChargerState(chargerId, { meterStartWh: sessionMeterStart });
+      await updateChargerState(chargerId, { connectorId, meterStartWh: sessionMeterStart });
     } catch (e) {
-      console.warn(`[METER] ${chargerId}: Could not fetch session meterStart, using current reading`);
+      console.warn(`[METER] ${chargerId}#${connectorId}: Could not fetch session meterStart, using current reading`);
       sessionMeterStart = energyWh;
     }
   }
 
   // Compute energy used in this session (for live display + event)
   const energyUsedWh = Math.max(0, energyWh - sessionMeterStart);
-  console.log(`[METER] ${chargerId}: meterStart=${sessionMeterStart}, current=${energyWh}, sessionEnergy=${energyUsedWh}Wh`);
+  console.log(`[METER] ${chargerId}#${connectorId}: meterStart=${sessionMeterStart}, current=${energyWh}, sessionEnergy=${energyUsedWh}Wh`);
 
   // Single consolidated state update (fixes duplicate writes)
   await updateChargerState(chargerId, {
+    connectorId,
     lastMeterValueWh: energyWh,
     lastMeterTime: new Date(),
   });

@@ -28,6 +28,7 @@ export async function getWallet(req, res) {
       wallet: {
         id: wallet.id,
         balance: wallet.balance.toString(),
+        lockedBalance: wallet.lockedBalance.toString(),
         currency: wallet.currency,
         updatedAt: wallet.updatedAt,
       },
@@ -55,46 +56,46 @@ export async function getWallet(req, res) {
  */
 export async function topUpWallet(req, res) {
   try {
-    const userId = req.user?.id ;
-    const { 
-      amount, 
-      email, 
-      phone, 
-      firstName, 
-      lastName, 
-      address, 
-      city, 
-      country 
+    const userId = req.user?.id;
+    const {
+      amount,
+      email,
+      phone,
+      firstName,
+      lastName,
+      address,
+      city,
+      country
     } = req.body;
 
     console.log("Wallet top Up request body : ", JSON.stringify(req.body, null, 2));
 
     // Validation
     if (!userId) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        message: "User ID required" 
+        message: "User ID required"
       });
     }
 
     if (!amount || amount <= 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Valid amount is required (must be greater than 0)" 
+        message: "Valid amount is required (must be greater than 0)"
       });
     }
 
     if (!email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Email is required" 
+        message: "Email is required"
       });
     }
 
     if (!phone) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Phone number is required" 
+        message: "Phone number is required"
       });
     }
 
@@ -110,9 +111,9 @@ export async function topUpWallet(req, res) {
     });
 
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        message: "User not found" 
+        message: "User not found"
       });
     }
 
@@ -155,10 +156,10 @@ export async function topUpWallet(req, res) {
     });
   } catch (error) {
     console.error("Top up error:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: "Failed to initiate payment",
-      message: error.message 
+      message: error.message
     });
   }
 }
@@ -252,6 +253,7 @@ export async function getWalletByUserId(req, res) {
         id: wallet.id,
         userId: wallet.userId,
         balance: wallet.balance.toString(),
+        lockedBalance: wallet.lockedBalance.toString(),
         currency: wallet.currency,
         updatedAt: wallet.updatedAt,
         user: user || null,
@@ -310,6 +312,7 @@ export async function getAllWallets(req, res) {
         id: w.id,
         userId: w.userId,
         balance: w.balance.toString(),
+        lockedBalance: w.lockedBalance.toString(),
         currency: w.currency,
         updatedAt: w.updatedAt,
         user: w.user,
@@ -352,7 +355,7 @@ export async function releaseChargingAmount(req, res) {
 
     // Validation
     if (!userId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: "User ID is required",
         field: "userId"
@@ -360,7 +363,7 @@ export async function releaseChargingAmount(req, res) {
     }
 
     if (!ownerId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: "Owner ID is required",
         field: "ownerId"
@@ -368,7 +371,7 @@ export async function releaseChargingAmount(req, res) {
     }
 
     if (!amount || amount <= 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: "Valid amount is required (must be greater than 0)",
         field: "amount"
@@ -376,7 +379,7 @@ export async function releaseChargingAmount(req, res) {
     }
 
     if (!transactionId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: "Transaction ID is required",
         field: "transactionId"
@@ -392,7 +395,7 @@ export async function releaseChargingAmount(req, res) {
     });
 
     if (!user) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
         error: "User not found",
         userId
@@ -405,7 +408,7 @@ export async function releaseChargingAmount(req, res) {
     });
 
     if (!owner) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
         error: "Station owner not found",
         ownerId
@@ -413,7 +416,7 @@ export async function releaseChargingAmount(req, res) {
     }
 
     if (owner.role !== "OWNER") {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
         error: "Provided owner ID is not a station owner",
         ownerId,

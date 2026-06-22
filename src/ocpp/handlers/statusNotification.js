@@ -1,6 +1,7 @@
 import { sendCallResult } from "../messageQueue.js";
 import { ChargePointStatus, ChargePointErrorCode } from "../ocppConstants.js";
-import { updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { chargersStore, getChargerKey, updateChargerState, getChargerState } from "../../services/chargerStore.service.js";
+import { clearPendingStartState, clearPendingStartWatchdog } from "../commands/remoteStartTransaction.js";
 import { ocppEvents } from "../ocppEvents.js";
 import prisma from "../../config/db.js";
 import sessionService from "../../services/session.service.js";
@@ -56,7 +57,7 @@ export default async function statusNotification(ws, messageId, chargerId, paylo
   await updateConnectorStatus(chargerId, connectorId, status, errorCode);
 
   // Send empty response
-  sendCallResult(ws, messageId, {}); 
+  sendCallResult(ws, messageId, {});
 }
 
 /**
@@ -69,7 +70,7 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
   }
 
   // Update session status based on OCPP status transitions
-  const activeSession = await sessionService.getActiveSession(chargerId);
+  const activeSession = await sessionService.getActiveSession(chargerId, connectorId);
   if (activeSession) {
     const statusMapping = {
       [ChargePointStatus.CHARGING]: "CHARGING",
@@ -93,6 +94,25 @@ async function handleStatusChange(chargerId, connectorId, status, errorCode, inf
   // Handle available (ready for new session)
   if (status === ChargePointStatus.AVAILABLE) {
     console.log(`[STATUS] ${chargerId}#${connectorId}: Available for new session`);
+
+    const cachedState = chargersStore.get(getChargerKey(chargerId, connectorId));
+    const pendingUserId = cachedState?.pendingUserId;
+    const pendingPresetAmount = cachedState?.pendingPresetAmount;
+
+    if (pendingUserId || pendingPresetAmount) {
+      console.log(`[STATUS] ${chargerId}#${connectorId}: Releasing stale pending start reservation`);
+      if (pendingUserId && pendingPresetAmount) {
+        try {
+          const walletService = await import("../../services/wallet.service.js");
+          await walletService.unlockFunds(pendingUserId, pendingPresetAmount);
+          console.log(`[STATUS] ${chargerId}#${connectorId}: Unlocked LKR ${pendingPresetAmount} for user ${pendingUserId}`);
+        } catch (error) {
+          console.error(`[STATUS] Failed to unlock stale pending funds for ${chargerId}#${connectorId}:`, error.message);
+        }
+      }
+      clearPendingStartWatchdog(chargerId, connectorId);
+      clearPendingStartState(chargerId, connectorId);
+    }
   }
 }
 
@@ -103,7 +123,7 @@ async function handleFault(chargerId, connectorId, status, errorCode, info) {
   console.warn(`⚠️ [FAULT] ${chargerId}#${connectorId}: ${errorCode} - ${info || 'No details'}`);
 
   // Check for active session on this connector
-  const session = await sessionService.getActiveSession(chargerId);
+  const session = await sessionService.getActiveSession(chargerId, connectorId);
 
   if (session) {
     // Emit fault event for billing to handle (partial refund, etc.)
@@ -134,39 +154,56 @@ async function updateConnectorStatus(chargerId, connectorId, status, errorCode) 
       return;
     }
 
-    // Update or create connector
-    await prisma.connector.upsert({
-      where: {
-        chargerId_connectorId: {
+    // Run in transaction to ensure consistency
+    await prisma.$transaction(async (tx) => {
+      // Update or create connector
+      await tx.connector.upsert({
+        where: {
+          chargerId_connectorId: {
+            chargerId,
+            connectorId,
+          },
+        },
+        create: {
           chargerId,
           connectorId,
+          status: mapConnectorStatus(status),
+          errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
         },
-      },
-      create: {
-        chargerId,
-        connectorId,
-        status: mapConnectorStatus(status),
-        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
-      },
-      update: {
-        status: mapConnectorStatus(status),
-        errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
-      },
-    });
+        update: {
+          status: mapConnectorStatus(status),
+          errorCode: errorCode !== ChargePointErrorCode.NO_ERROR ? errorCode : null,
+        },
+      });
 
-    // Also update charger status based on connector
-    await prisma.charger.updateMany({
-      where: { id: chargerId },
-      data: {
-        status: mapStatus(status),
-        lastSeen: new Date(),
-      },
+      // Also update charger status based on all its connectors
+      // Summary logic: AVAILABLE if any connector is AVAILABLE, otherwise if any is CHARGING, it's CHARGING
+      const allConnectors = await tx.connector.findMany({
+        where: { chargerId },
+      });
+
+      const hasAvailable = allConnectors.some(c => c.status === "AVAILABLE");
+      const hasCharging = allConnectors.some(c => c.status === "CHARGING" || c.status === "OCCUPIED");
+      const allFaulted = allConnectors.length > 0 && allConnectors.every(c => c.status === "FAULTED");
+
+      let summaryStatus = "UNAVAILABLE";
+      if (hasAvailable) summaryStatus = "AVAILABLE";
+      else if (hasCharging) summaryStatus = "CHARGING";
+      else if (allFaulted) summaryStatus = "FAULTED";
+      else if (allConnectors.length > 0) summaryStatus = allConnectors[0].status;
+
+      await tx.charger.update({
+        where: { id: chargerId },
+        data: {
+          status: summaryStatus,
+          lastSeen: new Date(),
+        },
+      });
     });
   } catch (error) {
     console.error("Error updating connector status:", error);
   }
 }
-
 /**
  * Map OCPP status to Prisma enum
  */

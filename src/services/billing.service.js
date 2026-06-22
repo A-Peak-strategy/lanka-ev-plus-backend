@@ -124,6 +124,7 @@ export async function processMeterValuesBilling({
   chargerId,
   transactionId,
   currentMeterWh,
+  isFinal = false,
 }) {
   // Get session
   const session = await prisma.chargingSession.findUnique({
@@ -211,6 +212,7 @@ export async function processMeterValuesBilling({
     energyWh: incrementalWh,
     chargerId,
     pricePerKwh: pricePerKwh.toFixed(2),
+    allowNegative: isFinal,
   });
 
   // Note: deductForCharging no longer checks for duplicates via ledger.
@@ -314,8 +316,9 @@ export async function processMeterValuesBilling({
       console.log(`[BILLING] Preset budget reached: LKR ${newTotalCost.toFixed(2)} >= LKR ${presetBudget.toFixed(2)} → auto-stopping charger ${chargerId}`);
 
       // Fire-and-forget: send RemoteStopTransaction
+      const targetConnectorId = session.connector?.connectorId;
       import("../ocpp/commands/remoteStopTransaction.js").then(({ stopChargingAtCharger }) => {
-        stopChargingAtCharger(chargerId, { reason: 'PRESET_BUDGET_REACHED' }).catch(err =>
+        stopChargingAtCharger(chargerId, targetConnectorId).catch(err =>
           console.error(`[BILLING] Auto-stop failed:`, err.message)
         );
       });
