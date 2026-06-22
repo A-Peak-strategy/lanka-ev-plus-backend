@@ -11,7 +11,7 @@ ALTER TABLE `ChargerRuntimeState` DROP FOREIGN KEY `ChargerRuntimeState_chargerI
 ALTER TABLE `Station` ADD COLUMN `googleMapsLink` VARCHAR(191) NULL;
 
 -- DropTable
-DROP TABLE `chargerRuntimeState`;
+DROP TABLE `ChargerRuntimeState`;
 
 -- CreateTable
 CREATE TABLE `ChargerRuntimeState` (
