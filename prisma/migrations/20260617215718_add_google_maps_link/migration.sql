@@ -5,7 +5,7 @@
 
 */
 -- DropForeignKey
-ALTER TABLE `chargerRuntimeState` DROP FOREIGN KEY `ChargerRuntimeState_chargerId_fkey`;
+ALTER TABLE `ChargerRuntimeState` DROP FOREIGN KEY `ChargerRuntimeState_chargerId_fkey`;
 
 -- AlterTable
 ALTER TABLE `Station` ADD COLUMN `googleMapsLink` VARCHAR(191) NULL;
