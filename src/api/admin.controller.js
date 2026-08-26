@@ -7,6 +7,7 @@ import { isChargerOnline } from "../ocpp/ocppServer.js";
 import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
 import { remoteStartTransaction } from "../ocpp/commands/remoteStartTransaction.js";
 import { v4 as uuidv4 } from "uuid";
+import { getCurrentPricingTier } from "../utils/timeUtils.js";
 
 /**
  * Admin Controller
@@ -1342,11 +1343,28 @@ export async function getActiveSessionForCharger(req, res) {
       take: 10,
     });
 
-    // 5) Get pricing for cost calculation
+    // 5) Get pricing for cost calculation — resolve TOU tier
     let energyRatePerKwh = 30; // default fallback
+    let currentTier = null;
+    let currentTierPrice = null;
+    let isTouEnabled = false;
+
     if (charger?.station?.pricing) {
       const pricing = charger.station.pricing;
-      if (pricing.perKwh) energyRatePerKwh = parseFloat(pricing.perKwh);
+      energyRatePerKwh = parseFloat(pricing.pricePerKwh) || 30;
+      isTouEnabled = !!pricing.isTouEnabled;
+
+      if (pricing.isTouEnabled) {
+        const tier = getCurrentPricingTier();
+        currentTier = tier;
+        if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = parseFloat(pricing.peakPrice);
+        else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = parseFloat(pricing.dayPrice);
+        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = parseFloat(pricing.offPeakPrice);
+        else currentTierPrice = energyRatePerKwh;
+
+        // When TOU is enabled, the effective rate is the current tier price
+        energyRatePerKwh = currentTierPrice;
+      }
     }
 
     res.json({
@@ -1355,6 +1373,9 @@ export async function getActiveSessionForCharger(req, res) {
         activeSessions,
         connectorStatuses,
         energyRatePerKwh,
+        currentTier,
+        currentTierPrice,
+        isTouEnabled,
         recentSessions,
       },
     });
