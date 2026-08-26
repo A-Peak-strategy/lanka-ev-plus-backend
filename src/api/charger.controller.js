@@ -7,6 +7,8 @@ import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
 import sessionService from "../services/session.service.js";
+import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import { getPricingForCharger } from "../services/billing.service.js";
 import * as walletService from "../services/wallet.service.js";
 
 /**
@@ -103,7 +105,11 @@ export const getCharger = async (req, res, next) => {
     const charger = await prisma.charger.findUnique({
       where: { id: chargerId },
       include: {
-        station: true,
+        station: {
+          include: {
+            pricing: true,
+          },
+        },
         connectors: true,
         sessions: {
           take: 10,
@@ -706,6 +712,7 @@ export async function getLiveSession(req, res) {
       select: {
         totalCost: true,
         pricePerKwh: true,
+        chargerId: true,
       },
     }),
   ]);
@@ -715,6 +722,29 @@ export async function getLiveSession(req, res) {
       success: false,
       message: "Live session not found"
     });
+  }
+
+  // Resolve TOU pricing tier for the current moment
+  let currentTier = null;
+  let currentTierPrice = null;
+  let isTouEnabled = false;
+
+  try {
+    if (session?.chargerId) {
+      const pricing = await getPricingForCharger(session.chargerId);
+      isTouEnabled = !!pricing.isTouEnabled;
+
+      if (pricing.isTouEnabled) {
+        const tier = getCurrentPricingTier();
+        currentTier = tier;
+        if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = pricing.peakPrice.toString();
+        else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = pricing.dayPrice.toString();
+        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = pricing.offPeakPrice.toString();
+        else currentTierPrice = pricing.pricePerKwh.toString();
+      }
+    }
+  } catch (e) {
+    console.warn('[getLiveSession] Failed to resolve TOU pricing:', e.message);
   }
 
   res.json({
@@ -729,45 +759,65 @@ export async function getLiveSession(req, res) {
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
       pricePerKwh: session?.pricePerKwh?.toString() ?? null,
+      // TOU fields
+      isTouEnabled,
+      currentTier,
+      currentTierPrice,
     }
   });
 }
 
-
 /**
- * Get charger pricing
- * 
+ * Get pricing for a charger (includes TOU tiers and current active tier)
+ *
  * GET /api/chargers/:chargerId/pricing
  */
-export const getChargerPricing = async (req, res, next) => {
+export async function getChargerPricingEndpoint(req, res, next) {
   try {
     const { chargerId } = req.params;
-
     validateChargerId(chargerId);
 
-    const charger = await prisma.charger.findUnique({
-      where: { id: chargerId },
-      include: {
-        station: {
-          include: {
-            pricing: true,
-          },
-        },
-      },
-    });
+    const pricing = await getPricingForCharger(chargerId);
 
-    if (!charger) {
-      throw new NotFoundError("Charger", chargerId);
+    if (!pricing) {
+      return res.status(404).json({
+        success: false,
+        message: "No pricing configuration found for this charger",
+      });
     }
 
-    const pricing = charger.station?.pricing;
+    // Resolve current TOU tier
+    let currentTier = null;
+    let currentTierPrice = null;
+
+    if (pricing.isTouEnabled) {
+      const tier = getCurrentPricingTier();
+      currentTier = tier;
+      if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = pricing.peakPrice.toString();
+      else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = pricing.dayPrice.toString();
+      else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = pricing.offPeakPrice.toString();
+      else currentTierPrice = pricing.pricePerKwh.toString();
+    }
 
     res.json({
       success: true,
-      pricing: pricing || null,
+      pricing: {
+        id: pricing.id,
+        name: pricing.name,
+        pricePerKwh: pricing.pricePerKwh?.toString(),
+        isTouEnabled: !!pricing.isTouEnabled,
+        peakPrice: pricing.peakPrice?.toString() ?? null,
+        dayPrice: pricing.dayPrice?.toString() ?? null,
+        offPeakPrice: pricing.offPeakPrice?.toString() ?? null,
+        commissionRate: pricing.commissionRate?.toString(),
+        gracePeriodSec: pricing.gracePeriodSec,
+        lowBalanceThreshold: pricing.lowBalanceThreshold?.toString(),
+        graceStartThreshold: pricing.graceStartThreshold?.toString(),
+        currentTier,
+        currentTierPrice,
+      },
     });
   } catch (error) {
     next(error);
   }
-};
-
+}

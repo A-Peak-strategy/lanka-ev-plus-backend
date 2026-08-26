@@ -674,6 +674,10 @@ export async function createPricing(data, adminId) {
   const {
     name,
     pricePerKwh,
+    isTouEnabled = false,
+    peakPrice,
+    dayPrice,
+    offPeakPrice,
     commissionRate = 2.00, // Default 2% per SRS
     gracePeriodSec = 60,
     lowBalanceThreshold = 300.00,
@@ -693,6 +697,10 @@ export async function createPricing(data, adminId) {
     data: {
       name,
       pricePerKwh,
+      isTouEnabled,
+      peakPrice,
+      dayPrice,
+      offPeakPrice,
       commissionRate,
       gracePeriodSec,
       lowBalanceThreshold,
@@ -726,7 +734,7 @@ export async function updatePricing(pricingId, data, adminId) {
   if (!current) throw new Error("Pricing not found");
 
   // Whitelist allowed fields to prevent overwriting id, createdAt, etc.
-  const allowedFields = ["name", "pricePerKwh", "commissionRate", "gracePeriodSec", "lowBalanceThreshold", "graceStartThreshold", "isDefault", "isActive"];
+  const allowedFields = ["name", "pricePerKwh", "isTouEnabled", "peakPrice", "dayPrice", "offPeakPrice", "commissionRate", "gracePeriodSec", "lowBalanceThreshold", "graceStartThreshold", "isDefault", "isActive"];
   const sanitizedData = {};
   for (const key of allowedFields) {
     if (data[key] !== undefined) {
