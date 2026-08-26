@@ -162,14 +162,24 @@ export async function getSessionHistory(req, res) {
         prisma.chargingSession.count({ where }),
     ]);
 
-    const formatted = sessions.map((s) => ({
+    const formatted = sessions.map((s) => {
+        // Calculate effective rate: totalCost / energyKwh
+        // For TOU sessions the stored pricePerKwh is just the initial base rate,
+        // so the effective average rate is more accurate for completed sessions.
+        const energyKwh = s.energyUsedWh / 1000;
+        const totalCostNum = parseFloat(s.totalCost?.toString() || "0");
+        const effectiveRate = energyKwh > 0
+            ? (totalCostNum / energyKwh).toFixed(2)
+            : (s.pricePerKwh?.toString() || "0.00");
+
+        return {
         id: s.id,
         transactionId: s.transactionId,
         status: s.status,
         energyUsedWh: s.energyUsedWh,
-        energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),
+        energyUsedKwh: energyKwh.toFixed(2),
         totalCost: s.totalCost?.toString() || "0.00",
-        pricePerKwh: s.pricePerKwh?.toString() || "0.00",
+        pricePerKwh: effectiveRate,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         stopReason: s.stopReason,
@@ -188,7 +198,8 @@ export async function getSessionHistory(req, res) {
                     : null,
             }
             : null,
-    }));
+        };
+    });
 
     res.json({
         success: true,

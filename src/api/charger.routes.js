@@ -40,7 +40,4 @@ router.post("/:chargerId/stop", verifyToken, requireActiveUser, stopCharging);
 
 router.get("/sessions/:transactionId/live", getLiveSession);
 
-// GET /api/chargers/:chargerId/pricing - Get charger pricing (public)
-router.get("/:chargerId/pricing", optionalAuth, getChargerPricing);
-
 export default router;
