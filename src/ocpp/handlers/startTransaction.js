@@ -80,6 +80,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
 
   console.log(`[START] userId resolution: pendingUserId=${pendingUserId}, resolvedUserId=${userId}${pendingPresetAmount ? `, presetAmount: LKR ${pendingPresetAmount}` : ''}`);
 
+
   // Acquire connector lock for this charging session
   const lockResult = await connectorLockService.markChargingActive(
     chargerId,

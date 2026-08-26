@@ -109,6 +109,19 @@ router.post("/admin/stations/:stationId/assign", requireAdmin, adminController.a
 router.post("/admin/stations/:stationId/pricing", requireAdmin, adminController.assignPricingToStation);
 
 // ============================================
+// STATION MEMBERSHIPS
+// ============================================
+router.get("/admin/station-membership-requests", requireAdmin, adminController.getMembershipRequests);
+router.get("/admin/station-membership-requests/:requestId", requireAdmin, adminController.getMembershipRequest);
+router.post("/admin/station-membership-requests/:requestId/payment-instructions", requireAdmin, adminController.setMembershipPaymentInstructions);
+router.post("/admin/station-membership-requests/:requestId/payment", requireAdmin, adminController.recordMembershipPayment);
+router.post("/admin/station-membership-requests/:requestId/approve", requireAdmin, adminController.approveMembershipRequest);
+router.post("/admin/station-membership-requests/:requestId/reject", requireAdmin, adminController.rejectMembershipRequest);
+router.get("/admin/station-memberships", requireAdmin, adminController.getStationMemberships);
+router.patch("/admin/station-memberships/:membershipId", requireAdmin, adminController.updateStationMembership);
+router.post("/admin/station-memberships/:membershipId/revoke", requireAdmin, adminController.revokeStationMembership);
+
+// ============================================
 // PRICING CONFIGURATION
 // ============================================
 

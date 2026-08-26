@@ -2,6 +2,7 @@ import admin from "../config/firebase.js";
 import prisma from "../config/db.js";
 import sessionService from "../services/session.service.js";
 import { AuthenticationError } from "../errors/index.js";
+import stationMembershipService from "../services/stationMembership.service.js";
 
 /**
  * User Profile Controller
@@ -106,6 +107,33 @@ export async function updateProfile(req, res) {
         success: true,
         profile: updated,
     });
+}
+
+export async function createMembershipRequest(req, res) {
+    try {
+        const request = await stationMembershipService.createRequest(req.user.id, req.body);
+        res.status(201).json({ success: true, data: request, message: "Station membership request submitted" });
+    } catch (error) {
+        res.status(error.message.includes("already") ? 409 : 400).json({ success: false, error: error.message });
+    }
+}
+
+export async function getMyMembershipRequests(req, res) {
+    try {
+        const requests = await stationMembershipService.getUserRequests(req.user.id);
+        res.json({ success: true, data: requests, count: requests.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+}
+
+export async function getMyMemberships(req, res) {
+    try {
+        const memberships = await stationMembershipService.getUserMemberships(req.user.id);
+        res.json({ success: true, data: memberships, count: memberships.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
 }
 
 /**
@@ -360,4 +388,7 @@ export default {
     getSessionStats,
     getActiveSessions,
     deleteAccount,
+    createMembershipRequest,
+    getMyMembershipRequests,
+    getMyMemberships,
 };
