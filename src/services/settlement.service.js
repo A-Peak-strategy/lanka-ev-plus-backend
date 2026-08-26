@@ -461,17 +461,20 @@ export async function getSettlements(filters = {}) {
     if (endDate) where.periodStart.lte = new Date(endDate);
   }
 
-  const settlements = await prisma.settlement.findMany({
-    where,
-    include: {
-      items: {
-        take: 10, // Limit items for list view
+  const [settlements, total] = await Promise.all([
+    prisma.settlement.findMany({
+      where,
+      include: {
+        items: {
+          take: 10, // Limit items for list view
+        },
       },
-    },
-    orderBy: { periodStart: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { periodStart: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.settlement.count({ where }),
+  ]);
 
   // Enrich with owner names
   const ownerIds = [...new Set(settlements.map((s) => s.ownerId))];
@@ -481,10 +484,12 @@ export async function getSettlements(filters = {}) {
   });
   const ownerMap = Object.fromEntries(owners.map((o) => [o.id, o]));
 
-  return settlements.map((s) => ({
+  const data = settlements.map((s) => ({
     ...s,
     owner: ownerMap[s.ownerId] || { name: null, email: null },
   }));
+
+  return { data, total };
 }
 
 /**
@@ -510,22 +515,20 @@ export async function getSettlementById(settlementId) {
  * @returns {Promise<object>}
  */
 export async function getPendingSettlementsSummary() {
-  const pending = await prisma.settlement.findMany({
+  // Use DB aggregation to avoid loading all PENDING settlements into memory
+  const agg = await prisma.settlement.aggregate({
     where: { status: "PENDING" },
+    _sum: {
+      netPayout: true,
+      sessionCount: true,
+    },
+    _count: { id: true },
   });
 
-  let totalAmount = new Decimal(0);
-  let totalSessions = 0;
-
-  for (const s of pending) {
-    totalAmount = totalAmount.plus(new Decimal(s.netPayout.toString()));
-    totalSessions += s.sessionCount;
-  }
-
   return {
-    count: pending.length,
-    totalAmount: totalAmount.toFixed(2),
-    totalSessions,
+    count: agg._count.id,
+    totalAmount: new Decimal(agg._sum.netPayout?.toString() || "0").toFixed(2),
+    totalSessions: agg._sum.sessionCount || 0,
   };
 }
 
@@ -566,31 +569,21 @@ export async function getOwnerEarningsSummary(ownerId, options = {}) {
     _count: { id: true },
   });
 
-  // Get pending payout amount (all-time, not date-filtered)
-  const pendingSettlements = await prisma.settlement.findMany({
-    where: {
-      ownerId,
-      status: "PENDING",
-    },
+  // Get pending payout amount (all-time, not date-filtered) — use aggregate
+  const pendingAgg = await prisma.settlement.aggregate({
+    where: { ownerId, status: "PENDING" },
+    _sum: { netPayout: true },
+    _count: { id: true },
   });
+  const pendingPayout = new Decimal(pendingAgg._sum.netPayout?.toString() || "0");
+  const pendingSettlementsCount = pendingAgg._count.id;
 
-  let pendingPayout = new Decimal(0);
-  for (const s of pendingSettlements) {
-    pendingPayout = pendingPayout.plus(new Decimal(s.netPayout.toString()));
-  }
-
-  // Get total paid out (all-time)
-  const paidSettlements = await prisma.settlement.findMany({
-    where: {
-      ownerId,
-      status: "PAID",
-    },
+  // Get total paid out (all-time) — use aggregate
+  const paidAgg = await prisma.settlement.aggregate({
+    where: { ownerId, status: "PAID" },
+    _sum: { netPayout: true },
   });
-
-  let totalPaidOut = new Decimal(0);
-  for (const s of paidSettlements) {
-    totalPaidOut = totalPaidOut.plus(new Decimal(s.netPayout.toString()));
-  }
+  const totalPaidOut = new Decimal(paidAgg._sum.netPayout?.toString() || "0");
 
   // All-time total earnings for balance calculation
   const allTimeSessions = startDate || endDate
@@ -614,7 +607,7 @@ export async function getOwnerEarningsSummary(ownerId, options = {}) {
     totalSessions: sessions._count.id,
     pendingPayout: pendingPayout.toFixed(2),
     totalPaidOut: totalPaidOut.toFixed(2),
-    pendingSettlementsCount: pendingSettlements.length,
+    pendingSettlementsCount,
     allTimeEarnings: allTimeEarnings.toFixed(2),
     remainingBalance: remainingBalance.toFixed(2),
   };
@@ -931,39 +924,51 @@ export async function deleteSettlement(settlementId, adminId) {
 
 /**
  * Get payment history for an owner
- * Returns all settlements (PAID, PENDING, FAILED) ordered by date
- * 
+ * Returns settlements (PAID, PENDING, FAILED) ordered by date, with pagination.
+ *
  * @param {string} ownerId
- * @returns {Promise<object[]>}
+ * @param {object} options - { limit, offset }
+ * @returns {Promise<object>} { data, total }
  */
-export async function getOwnerPaymentHistory(ownerId) {
-  const settlements = await prisma.settlement.findMany({
-    where: { ownerId },
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      periodStart: true,
-      periodEnd: true,
-      totalEarnings: true,
-      totalCommission: true,
-      netPayout: true,
-      sessionCount: true,
-      status: true,
-      paidAt: true,
-      paymentRef: true,
-      paymentMethod: true,
-      paymentNotes: true,
-      createdAt: true,
-    },
-  });
+export async function getOwnerPaymentHistory(ownerId, options = {}) {
+  const { limit = 25, offset = 0 } = options;
 
-  return settlements.map((s) => ({
+  const where = { ownerId };
+
+  const [settlements, total] = await Promise.all([
+    prisma.settlement.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+      select: {
+        id: true,
+        periodStart: true,
+        periodEnd: true,
+        totalEarnings: true,
+        totalCommission: true,
+        netPayout: true,
+        sessionCount: true,
+        status: true,
+        paidAt: true,
+        paymentRef: true,
+        paymentMethod: true,
+        paymentNotes: true,
+        createdAt: true,
+      },
+    }),
+    prisma.settlement.count({ where }),
+  ]);
+
+  const data = settlements.map((s) => ({
     ...s,
     totalEarnings: s.totalEarnings.toString(),
     totalCommission: s.totalCommission.toString(),
     netPayout: s.netPayout.toString(),
     type: s.sessionCount === 0 ? "MANUAL" : "BATCH",
   }));
+
+  return { data, total };
 }
 
 export default {

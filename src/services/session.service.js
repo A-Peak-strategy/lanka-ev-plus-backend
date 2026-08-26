@@ -420,7 +420,9 @@ export async function handleOfflineReplay(data, type) {
 
 /**
  * Get session statistics for a user
- * 
+ *
+ * Uses DB-level aggregation to avoid loading all sessions into memory.
+ *
  * @param {string} userId
  * @param {object} options
  * @returns {Promise<object>}
@@ -435,30 +437,30 @@ export async function getUserSessionStats(userId, options = {}) {
     if (endDate) where.startedAt.lte = new Date(endDate);
   }
 
-  const sessions = await prisma.chargingSession.findMany({
-    where,
-    select: {
-      energyUsedWh: true,
-      totalCost: true,
-      startedAt: true,
-      endedAt: true,
-    },
-  });
+  // Single DB aggregate — avoids loading all rows into Node.js memory
+  const [agg, completedCount] = await Promise.all([
+    prisma.chargingSession.aggregate({
+      where,
+      _sum: {
+        energyUsedWh: true,
+        totalCost: true,
+      },
+      _count: { id: true },
+    }),
+    prisma.chargingSession.count({
+      where: { ...where, endedAt: { not: null } },
+    }),
+  ]);
 
-  const totalEnergy = sessions.reduce((sum, s) => sum + (s.energyUsedWh || 0), 0);
-  const totalCost = sessions.reduce(
-    (sum, s) => sum.plus(new Decimal(s.totalCost?.toString() || "0")),
-    new Decimal(0)
-  );
-  const totalSessions = sessions.length;
-  const completedSessions = sessions.filter((s) => s.endedAt).length;
+  const totalEnergy = agg._sum.energyUsedWh || 0;
+  const totalCost = new Decimal(agg._sum.totalCost?.toString() || "0");
 
   return {
     totalEnergy,
     totalEnergyKwh: (totalEnergy / 1000).toFixed(2),
     totalCost: totalCost.toFixed(2),
-    totalSessions,
-    completedSessions,
+    totalSessions: agg._count.id,
+    completedSessions: completedCount,
   };
 }
 

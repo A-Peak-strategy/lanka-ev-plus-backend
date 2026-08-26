@@ -16,26 +16,40 @@ import * as walletService from "../services/wallet.service.js";
  */
 export const getAllChargers = async (req, res, next) => {
   try {
-    // Get chargers from database
-    const dbChargers = await prisma.charger.findMany({
-      include: {
-        station: {
-          select: {
-            id: true,
-            name: true,
-            address: true,
-            pricing: true,
+    const { stationId, status, limit, offset } = req.query;
+    const parsedLimit = limit ? parseInt(limit) : undefined;
+    const parsedOffset = offset ? parseInt(offset) : undefined;
+
+    const where = {};
+    if (stationId) where.stationId = stationId;
+    if (status) where.status = status;
+
+    // Get chargers from database along with total count
+    const [dbChargers, total] = await Promise.all([
+      prisma.charger.findMany({
+        where,
+        include: {
+          station: {
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              pricing: true,
+            },
+          },
+          connectors: {
+            select: {
+              connectorId: true,
+              status: true,
+            },
           },
         },
-        connectors: {
-          select: {
-            connectorId: true,
-            status: true,
-          },
-        },
-      },
-      orderBy: { lastSeen: "desc" },
-    });
+        orderBy: { lastSeen: "desc" },
+        take: parsedLimit,
+        skip: parsedOffset,
+      }),
+      prisma.charger.count({ where }),
+    ]);
 
     // Merge with in-memory state
     const chargers = dbChargers.map((charger) => {
@@ -82,6 +96,12 @@ export const getAllChargers = async (req, res, next) => {
       count: chargers.length,
       onlineCount: getConnectedChargerIds().length,
       chargers,
+      pagination: {
+        total,
+        limit: parsedLimit || total,
+        offset: parsedOffset || 0,
+        hasMore: (parsedOffset || 0) + chargers.length < total,
+      },
     });
   } catch (error) {
     next(error);
@@ -652,6 +672,8 @@ export const getChargerSessions = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
     const { limit = 20, offset = 0, active } = req.query;
+    const parsedLimit = parseInt(limit) || 20;
+    const parsedOffset = parseInt(offset) || 0;
 
     validateChargerId(chargerId);
 
@@ -662,22 +684,32 @@ export const getChargerSessions = async (req, res, next) => {
       where.endedAt = { not: null };
     }
 
-    const sessions = await prisma.chargingSession.findMany({
-      where,
-      orderBy: { startedAt: "desc" },
-      take: parseInt(limit) || 20,
-      skip: parseInt(offset) || 0,
-      include: {
-        user: {
-          select: { id: true, name: true },
+    const [sessions, total] = await Promise.all([
+      prisma.chargingSession.findMany({
+        where,
+        orderBy: { startedAt: "desc" },
+        take: parsedLimit,
+        skip: parsedOffset,
+        include: {
+          user: {
+            select: { id: true, name: true },
+          },
         },
-      },
-    });
+      }),
+      prisma.chargingSession.count({ where }),
+    ]);
 
     res.json({
       success: true,
       count: sessions.length,
       sessions,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        totalPages: Math.ceil(total / parsedLimit),
+        hasMore: parsedOffset + sessions.length < total,
+      },
     });
   } catch (error) {
     next(error);

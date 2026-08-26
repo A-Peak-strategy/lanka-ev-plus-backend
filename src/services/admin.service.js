@@ -99,20 +99,25 @@ export async function getUsers(filters = {}) {
     ];
   }
 
-  return prisma.user.findMany({
-    where,
-    include: {
-      wallet: {
-        select: { balance: true },
+  const [data, total] = await Promise.all([
+    prisma.user.findMany({
+      where,
+      include: {
+        wallet: {
+          select: { balance: true },
+        },
+        ownedStations: {
+          select: { id: true, name: true },
+        },
       },
-      ownedStations: {
-        select: { id: true, name: true },
-      },
-    },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.user.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 /**
@@ -236,21 +241,26 @@ export async function getChargers(filters = {}) {
   if (status) where.status = status;
   if (isRegistered !== undefined) where.isRegistered = isRegistered;
 
-  return prisma.charger.findMany({
-    where,
-    include: {
-      station: {
-        select: { id: true, name: true, owner: { select: { id: true, name: true } } },
+  const [data, total] = await Promise.all([
+    prisma.charger.findMany({
+      where,
+      include: {
+        station: {
+          select: { id: true, name: true, owner: { select: { id: true, name: true } } },
+        },
+        connectors: true,
+        _count: {
+          select: { sessions: true },
+        },
       },
-      connectors: true,
-      _count: {
-        select: { sessions: true },
-      },
-    },
-    orderBy: { lastSeen: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { lastSeen: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.charger.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 /**
@@ -510,21 +520,26 @@ export async function getStations(filters = {}) {
   if (ownerId) where.ownerId = ownerId;
   if (isActive !== undefined) where.isActive = isActive;
 
-  return prisma.station.findMany({
-    where,
-    include: {
-      owner: {
-        select: { id: true, name: true, email: true },
+  const [data, total] = await Promise.all([
+    prisma.station.findMany({
+      where,
+      include: {
+        owner: {
+          select: { id: true, name: true, email: true },
+        },
+        pricing: true,
+        chargers: {
+          select: { id: true, serialNumber: true, status: true, connectionState: true },
+        },
       },
-      pricing: true,
-      chargers: {
-        select: { id: true, serialNumber: true, status: true, connectionState: true },
-      },
-    },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.station.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 /**
@@ -835,24 +850,29 @@ export async function getSessions(filters = {}) {
     if (ownerId) where.charger.station = { ownerId };
   }
 
-  return prisma.chargingSession.findMany({
-    where,
-    include: {
-      charger: {
-        include: {
-          station: {
-            select: { id: true, name: true, ownerId: true },
+  const [data, total] = await Promise.all([
+    prisma.chargingSession.findMany({
+      where,
+      include: {
+        charger: {
+          include: {
+            station: {
+              select: { id: true, name: true, ownerId: true },
+            },
           },
         },
+        user: {
+          select: { id: true, name: true, email: true },
+        },
       },
-      user: {
-        select: { id: true, name: true, email: true },
-      },
-    },
-    orderBy: { startedAt: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { startedAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.chargingSession.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 /**
@@ -874,36 +894,24 @@ export async function getSessionStats(filters = {}) {
     if (ownerId) where.charger.station = { ownerId };
   }
 
-  const sessions = await prisma.chargingSession.findMany({
+  // Single DB aggregate call — avoids loading all rows into Node.js memory
+  const agg = await prisma.chargingSession.aggregate({
     where,
-    select: {
+    _sum: {
       energyUsedWh: true,
       totalCost: true,
       ownerEarning: true,
       commission: true,
     },
+    _count: { id: true },
   });
 
-  const totalEnergy = sessions.reduce((sum, s) => sum + (s.energyUsedWh || 0), 0);
-  const totalRevenue = sessions.reduce(
-    (sum, s) => sum.plus(new Decimal(s.totalCost?.toString() || "0")),
-    new Decimal(0)
-  );
-  const totalOwnerEarnings = sessions.reduce(
-    (sum, s) => sum.plus(new Decimal(s.ownerEarning?.toString() || "0")),
-    new Decimal(0)
-  );
-  const totalCommission = sessions.reduce(
-    (sum, s) => sum.plus(new Decimal(s.commission?.toString() || "0")),
-    new Decimal(0)
-  );
-
   return {
-    sessionCount: sessions.length,
-    totalEnergyKwh: (totalEnergy / 1000).toFixed(2),
-    totalRevenue: totalRevenue.toFixed(2),
-    totalOwnerEarnings: totalOwnerEarnings.toFixed(2),
-    totalCommission: totalCommission.toFixed(2),
+    sessionCount: agg._count.id,
+    totalEnergyKwh: ((agg._sum.energyUsedWh || 0) / 1000).toFixed(2),
+    totalRevenue: new Decimal(agg._sum.totalCost?.toString() || "0").toFixed(2),
+    totalOwnerEarnings: new Decimal(agg._sum.ownerEarning?.toString() || "0").toFixed(2),
+    totalCommission: new Decimal(agg._sum.commission?.toString() || "0").toFixed(2),
   };
 }
 
@@ -924,7 +932,7 @@ export async function getOcppLogs(filters = {}) {
     direction,
     startDate,
     endDate,
-    limit = 100,
+    limit = 50,
     offset = 0,
   } = filters;
 
@@ -939,12 +947,17 @@ export async function getOcppLogs(filters = {}) {
     if (endDate) where.timestamp.lte = new Date(endDate);
   }
 
-  return prisma.ocppMessageLog.findMany({
-    where,
-    orderBy: { timestamp: "desc" },
-    take: limit,
-    skip: offset,
-  });
+  const [data, total] = await Promise.all([
+    prisma.ocppMessageLog.findMany({
+      where,
+      orderBy: { timestamp: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.ocppMessageLog.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 // ============================================
@@ -993,7 +1006,7 @@ export async function getAuditLogs(filters = {}) {
     targetType,
     startDate,
     endDate,
-    limit = 100,
+    limit = 50,
     offset = 0,
   } = filters;
 
@@ -1008,12 +1021,17 @@ export async function getAuditLogs(filters = {}) {
     if (endDate) where.createdAt.lte = new Date(endDate);
   }
 
-  return prisma.adminAuditLog.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    skip: offset,
-  });
+  const [data, total] = await Promise.all([
+    prisma.adminAuditLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.adminAuditLog.count({ where }),
+  ]);
+
+  return { data, total };
 }
 
 export default {

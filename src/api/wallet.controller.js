@@ -182,11 +182,15 @@ export async function getTransactions(req, res) {
     if (!userId) {
       throw new AuthenticationError("User authentication required");
     }
-    const { limit = 50, offset = 0, type } = req.query;
 
-    const transactions = await walletService.getTransactionHistory(userId, {
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+    const { limit = 50, offset = 0, type } = req.query;
+    console.log("Get transactions request body : ", JSON.stringify(req.query, null, 2));
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
+
+    const { data: transactions, total } = await walletService.getTransactionHistory(userId, {
+      limit: parsedLimit,
+      offset: parsedOffset,
       type,
     });
 
@@ -202,9 +206,11 @@ export async function getTransactions(req, res) {
         createdAt: t.createdAt,
       })),
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        hasMore: transactions.length === parseInt(limit),
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        totalPages: Math.ceil(total / parsedLimit),
+        hasMore: parsedOffset + transactions.length < total,
       },
     });
   } catch (error) {
