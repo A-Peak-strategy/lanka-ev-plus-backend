@@ -8,6 +8,7 @@ import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js
 import { remoteStartTransaction } from "../ocpp/commands/remoteStartTransaction.js";
 import { v4 as uuidv4 } from "uuid";
 import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import stationMembershipService from "../services/stationMembership.service.js";
 
 /**
  * Admin Controller
@@ -1684,6 +1685,90 @@ export async function processPayoutForOwner(req, res) {
   }
 }
 
+// ============================================
+// STATION MEMBERSHIPS
+// ============================================
+
+export async function getMembershipRequests(req, res) {
+  try {
+    const result = await stationMembershipService.listRequests(req.query);
+    res.json({ success: true, ...result, count: result.data.length });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function getMembershipRequest(req, res) {
+  try {
+    res.json({ success: true, data: await stationMembershipService.getRequest(req.params.requestId) });
+  } catch (error) {
+    res.status(error.message.includes("not found") ? 404 : 400).json({ success: false, error: error.message });
+  }
+}
+
+export async function recordMembershipPayment(req, res) {
+  try {
+    const data = await stationMembershipService.recordPayment(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Bank transfer recorded" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function setMembershipPaymentInstructions(req, res) {
+  try {
+    const data = await stationMembershipService.setPaymentInstructions(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Bank-transfer payment instructions set" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function approveMembershipRequest(req, res) {
+  try {
+    const data = await stationMembershipService.approveRequest(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership approved" });
+  } catch (error) {
+    res.status(error.message.includes("already") ? 409 : 400).json({ success: false, error: error.message });
+  }
+}
+
+export async function rejectMembershipRequest(req, res) {
+  try {
+    const data = await stationMembershipService.rejectRequest(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership request rejected" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function getStationMemberships(req, res) {
+  try {
+    const result = await stationMembershipService.listMemberships(req.query);
+    res.json({ success: true, ...result, count: result.data.length });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function updateStationMembership(req, res) {
+  try {
+    const data = await stationMembershipService.updateMembership(req.params.membershipId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership updated" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function revokeStationMembership(req, res) {
+  try {
+    const data = await stationMembershipService.revokeMembership(req.params.membershipId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership revoked" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
 export default {
   // Users
   createOwner,
@@ -1758,6 +1843,17 @@ export default {
   getPayoutOwnersSummary,
   getPayoutOwnerDetail,
   processPayoutForOwner,
+
+  // Station memberships
+  getMembershipRequests,
+  getMembershipRequest,
+  recordMembershipPayment,
+  setMembershipPaymentInstructions,
+  approveMembershipRequest,
+  rejectMembershipRequest,
+  getStationMemberships,
+  updateStationMembership,
+  revokeStationMembership,
 
   // Debug
   adminRemoteStart,

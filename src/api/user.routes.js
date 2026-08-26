@@ -6,6 +6,9 @@ import {
     getSessionStats,
     getActiveSessions,
     deleteAccount,
+    createMembershipRequest,
+    getMyMembershipRequests,
+    getMyMemberships,
 } from "./user.controller.js";
 import {
     verifyToken,
@@ -25,6 +28,11 @@ router.put("/me", updateProfile);
 
 // DELETE /api/user/me - Delete user account (soft-delete)
 router.delete("/me", deleteAccount);
+
+// Station membership requests and currently active/expired memberships
+router.post("/me/membership-requests", createMembershipRequest);
+router.get("/me/membership-requests", getMyMembershipRequests);
+router.get("/me/memberships", getMyMemberships);
 
 // GET /api/user/me/sessions - Get charging session history
 router.get("/me/sessions", getSessionHistory);

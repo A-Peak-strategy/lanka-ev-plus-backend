@@ -9,6 +9,7 @@ import ledgerService, {
 import { startGracePeriod, cancelGracePeriod } from "./gracePeriod.service.js";
 import notificationService from "./notification.service.js";
 import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import stationMembershipService from "./stationMembership.service.js";
 
 // Configure Decimal.js
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
@@ -205,7 +206,16 @@ export async function processMeterValuesBilling({
     else if (tier === 'DAY' && pricing.dayPrice) currentPriceStr = pricing.dayPrice.toString();
     else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentPriceStr = pricing.offPeakPrice.toString();
   }
-  const pricePerKwh = new Decimal(currentPriceStr);
+  const basePricePerKwh = new Decimal(currentPriceStr);
+  // Validate membership at billing time against the user's station and its
+  // current validity period. This deliberately avoids altering the live
+  // ChargingSession table.
+  const membership = await stationMembershipService.getActiveMembershipForCharging(
+    session.userId,
+    chargerId
+  );
+  const membershipDiscountRate = new Decimal(membership?.discountRate?.toString() || "0");
+  const pricePerKwh = basePricePerKwh.times(new Decimal(1).minus(membershipDiscountRate.dividedBy(100)));
   const commissionRate = new Decimal(pricing.commissionRate.toString());
 
   // Calculate cost for incremental energy
@@ -360,6 +370,8 @@ export async function processMeterValuesBilling({
     newBalance: deductResult.newBalance,
     totalCost: newTotalCost.toFixed(2),
     split,
+    basePricePerKwh: basePricePerKwh.toFixed(2),
+    membershipDiscountRate: membershipDiscountRate.toFixed(2),
   };
 }
 
@@ -488,7 +500,12 @@ export async function finalizeSessionBilling(transactionId) {
     const chargerId = session.chargerId || 'Unknown';
     const energyKwh = ((session.energyUsedWh || 0) / 1000).toFixed(2);
     const pricing = session.charger?.station?.pricing;
-    const pricePerKwh = pricing ? pricing.pricePerKwh.toString() : '?';
+    const basePricePerKwh = pricing ? pricing.pricePerKwh.toString() : '?';
+    // Accurate across multiple TOU tiers and includes the membership discount.
+    const effectivePricePerKwh = session.energyUsedWh > 0
+      ? totalCost.dividedBy(new Decimal(session.energyUsedWh).dividedBy(1000)).toFixed(2)
+      : "0.00";
+    const pricePerKwh = effectivePricePerKwh;
 
     // Calculate duration
     const startTime = session.startedAt || session.createdAt;
@@ -524,6 +541,8 @@ export async function finalizeSessionBilling(transactionId) {
             energyUsedWh: session.energyUsedWh,
             energyKwh,
             pricePerKwh,
+            basePricePerKwh,
+            effectivePricePerKwh,
             durationMins,
             totalCost: totalCost.toFixed(2),
           },
