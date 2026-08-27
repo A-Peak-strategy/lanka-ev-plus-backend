@@ -57,19 +57,26 @@ export async function createOwner(req, res) {
 export async function getUsers(req, res) {
   try {
     const { role, isActive, limit, offset, search } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const users = await adminService.getUsers({
+    const { data, total } = await adminService.getUsers({
       role,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
       search,
     });
 
     res.json({
       success: true,
-      data: users,
-      count: users.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get users error:", error);
@@ -175,19 +182,26 @@ export async function registerCharger(req, res) {
 export async function getChargers(req, res) {
   try {
     const { stationId, status, isRegistered, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const chargers = await adminService.getChargers({
+    const { data, total } = await adminService.getChargers({
       stationId,
       status,
       isRegistered: isRegistered === "true" ? true : isRegistered === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: chargers,
-      count: chargers.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get chargers error:", error);
@@ -264,18 +278,25 @@ export async function createStation(req, res) {
 export async function getStations(req, res) {
   try {
     const { ownerId, isActive, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const stations = await adminService.getStations({
+    const { data, total } = await adminService.getStations({
       ownerId,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: stations,
-      count: stations.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get stations error:", error);
@@ -403,8 +424,10 @@ export async function assignPricingToStation(req, res) {
 export async function getSessions(req, res) {
   try {
     const { chargerId, userId, stationId, ownerId, startDate, endDate, active, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const sessions = await adminService.getSessions({
+    const { data, total } = await adminService.getSessions({
       chargerId,
       userId,
       stationId,
@@ -412,14 +435,19 @@ export async function getSessions(req, res) {
       startDate,
       endDate,
       active: active === "true" ? true : active === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: sessions,
-      count: sessions.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get sessions error:", error);
@@ -463,21 +491,28 @@ export async function getSessionStats(req, res) {
 export async function getOcppLogs(req, res) {
   try {
     const { chargerId, action, direction, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const logs = await adminService.getOcppLogs({
+    const { data, total } = await adminService.getOcppLogs({
       chargerId,
       action,
       direction,
       startDate,
       endDate,
-      limit: parseInt(limit) || 100,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: logs,
-      count: logs.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get OCPP logs error:", error);
@@ -496,20 +531,27 @@ export async function getOcppLogs(req, res) {
 export async function getSettlements(req, res) {
   try {
     const { ownerId, status, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const settlements = await settlementService.getSettlements({
+    const { data, total } = await settlementService.getSettlements({
       ownerId,
       status,
       startDate,
       endDate,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: settlements,
-      count: settlements.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get settlements error:", error);
@@ -718,12 +760,23 @@ export async function deleteSettlement(req, res) {
 export async function getOwnerPaymentHistory(req, res) {
   try {
     const { ownerId } = req.params;
+    const parsedLimit = parseInt(req.query.limit) || 25;
+    const parsedOffset = parseInt(req.query.offset) || 0;
 
-    const history = await settlementService.getOwnerPaymentHistory(ownerId);
+    const { data, total } = await settlementService.getOwnerPaymentHistory(ownerId, {
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
 
     res.json({
       success: true,
-      data: history,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get payment history error:", error);
@@ -829,21 +882,28 @@ export async function recordOwnerPayment(req, res) {
 export async function getAuditLogs(req, res) {
   try {
     const { adminId, action, targetType, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const logs = await adminService.getAuditLogs({
+    const { data, total } = await adminService.getAuditLogs({
       adminId,
       action,
       targetType,
       startDate,
       endDate,
-      limit: parseInt(limit) || 100,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: logs,
-      count: logs.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get audit logs error:", error);
