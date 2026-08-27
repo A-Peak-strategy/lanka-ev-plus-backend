@@ -2,6 +2,7 @@ import admin from "../config/firebase.js";
 import prisma from "../config/db.js";
 import sessionService from "../services/session.service.js";
 import { AuthenticationError } from "../errors/index.js";
+import stationMembershipService from "../services/stationMembership.service.js";
 
 /**
  * User Profile Controller
@@ -108,6 +109,33 @@ export async function updateProfile(req, res) {
     });
 }
 
+export async function createMembershipRequest(req, res) {
+    try {
+        const request = await stationMembershipService.createRequest(req.user.id, req.body);
+        res.status(201).json({ success: true, data: request, message: "Station membership request submitted" });
+    } catch (error) {
+        res.status(error.message.includes("already") ? 409 : 400).json({ success: false, error: error.message });
+    }
+}
+
+export async function getMyMembershipRequests(req, res) {
+    try {
+        const requests = await stationMembershipService.getUserRequests(req.user.id);
+        res.json({ success: true, data: requests, count: requests.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+}
+
+export async function getMyMemberships(req, res) {
+    try {
+        const memberships = await stationMembershipService.getUserMemberships(req.user.id);
+        res.json({ success: true, data: memberships, count: memberships.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+}
+
 /**
  * Get authenticated user's charging session history
  * GET /api/user/me/sessions
@@ -162,14 +190,24 @@ export async function getSessionHistory(req, res) {
         prisma.chargingSession.count({ where }),
     ]);
 
-    const formatted = sessions.map((s) => ({
+    const formatted = sessions.map((s) => {
+        // Calculate effective rate: totalCost / energyKwh
+        // For TOU sessions the stored pricePerKwh is just the initial base rate,
+        // so the effective average rate is more accurate for completed sessions.
+        const energyKwh = s.energyUsedWh / 1000;
+        const totalCostNum = parseFloat(s.totalCost?.toString() || "0");
+        const effectiveRate = energyKwh > 0
+            ? (totalCostNum / energyKwh).toFixed(2)
+            : (s.pricePerKwh?.toString() || "0.00");
+
+        return {
         id: s.id,
         transactionId: s.transactionId,
         status: s.status,
         energyUsedWh: s.energyUsedWh,
-        energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),
+        energyUsedKwh: energyKwh.toFixed(2),
         totalCost: s.totalCost?.toString() || "0.00",
-        pricePerKwh: s.pricePerKwh?.toString() || "0.00",
+        pricePerKwh: effectiveRate,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         stopReason: s.stopReason,
@@ -188,7 +226,8 @@ export async function getSessionHistory(req, res) {
                     : null,
             }
             : null,
-    }));
+        };
+    });
 
     res.json({
         success: true,
@@ -349,4 +388,7 @@ export default {
     getSessionStats,
     getActiveSessions,
     deleteAccount,
+    createMembershipRequest,
+    getMyMembershipRequests,
+    getMyMemberships,
 };

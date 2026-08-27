@@ -34,6 +34,8 @@ model User {
   bookings      Booking[]
   ledgerEntries Ledger[]
   payments      Payment[]
+  membershipRequests StationMembershipRequest[] @relation("MembershipRequestUser")
+  stationMemberships StationMembership[] @relation("StationMembershipUser")
   
   // Owner-specific
   ownedStations Station[] @relation("StationOwner")
@@ -130,6 +132,12 @@ model Pricing {
   // Price per kWh in base currency (LKR)
   pricePerKwh     Decimal   @db.Decimal(10, 2)
   
+  // Time-of-Use (TOU) Configurations
+  isTouEnabled    Boolean   @default(false)
+  peakPrice       Decimal?  @db.Decimal(10, 2) // 18:30 to 22:30
+  dayPrice        Decimal?  @db.Decimal(10, 2) // 05:30 to 18:30
+  offPeakPrice    Decimal?  @db.Decimal(10, 2) // 22:30 to 05:30
+  
   // Commission percentage (e.g., 2.00 = 2%) - Per SRS: 2%
   commissionRate  Decimal   @default(2.00) @db.Decimal(5, 2)
   
@@ -184,6 +192,8 @@ model Station {
   owner           User      @relation("StationOwner", fields: [ownerId], references: [id])
   pricing         Pricing?  @relation(fields: [pricingId], references: [id])
   chargers        Charger[]
+  membershipRequests StationMembershipRequest[]
+  memberships     StationMembership[]
 
   @@index([ownerId])
   @@index([latitude, longitude])
@@ -346,6 +356,82 @@ model ChargingSession {
   @@index([transactionId])
   @@index([startedAt])
   @@index([userId, status])
+}
+
+// ============================================
+// STATION MEMBERSHIPS
+// ============================================
+
+model StationMembershipRequest {
+  id              String                  @id @default(uuid())
+  userId          String
+  stationId       String
+  status          MembershipRequestStatus @default(PENDING_REVIEW)
+
+  // Bank transfer is confirmed manually by an administrator; no gateway is used.
+  paymentAmount   Decimal?                @db.Decimal(12, 2)
+  paymentReference String?                @db.VarChar(191)
+  paymentNotes    String?                 @db.Text
+  paymentReceivedAt DateTime?
+  paymentReceivedByAdminId String?
+
+  requestedDurationDays Int?
+  reviewedAt      DateTime?
+  reviewedByAdminId String?
+  rejectionReason String?                 @db.Text
+  adminNotes      String?                 @db.Text
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  user            User                    @relation("MembershipRequestUser", fields: [userId], references: [id])
+  station         Station                 @relation(fields: [stationId], references: [id])
+  membership      StationMembership?
+
+  @@index([userId, status])
+  @@index([stationId, status])
+  @@index([status, createdAt])
+}
+
+enum MembershipRequestStatus {
+  PENDING_REVIEW
+  PAYMENT_PENDING
+  PAYMENT_RECEIVED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model StationMembership {
+  id              String                  @id @default(uuid())
+  userId          String
+  stationId       String
+  requestId       String?                 @unique
+  discountRate    Decimal                 @db.Decimal(5, 2)
+  status          StationMembershipStatus @default(ACTIVE)
+  startsAt        DateTime
+  expiresAt       DateTime
+  approvedAt      DateTime                @default(now())
+  approvedByAdminId String
+  revokedAt       DateTime?
+  revokedByAdminId String?
+  revocationReason String?                @db.Text
+  adminNotes      String?                 @db.Text
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  user            User                    @relation("StationMembershipUser", fields: [userId], references: [id])
+  station         Station                 @relation(fields: [stationId], references: [id])
+  request         StationMembershipRequest? @relation(fields: [requestId], references: [id])
+
+  @@unique([userId, stationId])
+  @@index([stationId, status, expiresAt])
+  @@index([userId, status, expiresAt])
+}
+
+enum StationMembershipStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
 }
 
 enum SessionStatus {
