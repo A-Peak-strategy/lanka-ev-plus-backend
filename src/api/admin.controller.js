@@ -1064,7 +1064,7 @@ export async function updateStation(req, res) {
     const { stationId } = req.params;
     const adminId = req.user?.id || "system";
 
-    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled", "googleMapsLink"];
+    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled", "membershipEnabled", "googleMapsLink"];
     const data = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) {
