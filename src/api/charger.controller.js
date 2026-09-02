@@ -36,6 +36,7 @@ export const getAllChargers = async (req, res, next) => {
               id: true,
               name: true,
               address: true,
+              membershipEnabled: true,
               pricing: true,
             },
           },

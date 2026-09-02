@@ -185,6 +185,9 @@ model Station {
   // Booking settings
   bookingEnabled  Boolean   @default(true)
   
+  // Station membership settings
+  membershipEnabled Boolean @default(false)
+  
   isActive        Boolean   @default(true)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

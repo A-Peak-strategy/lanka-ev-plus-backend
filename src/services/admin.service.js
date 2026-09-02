@@ -469,6 +469,7 @@ export async function createStation(data, adminId) {
     ownerId,
     pricingId,
     bookingEnabled = true,
+    membershipEnabled = false,
     googleMapsLink,
   } = data;
 
@@ -492,6 +493,7 @@ export async function createStation(data, adminId) {
       ownerId,
       pricingId,
       bookingEnabled,
+      membershipEnabled,
       googleMapsLink: googleMapsLink || null,
     },
   });
