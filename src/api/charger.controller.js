@@ -7,7 +7,10 @@ import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
 import sessionService from "../services/session.service.js";
-import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import {
+  getCurrentPricingTier,
+  resolveCurrentTierPricing,
+} from "../utils/timeUtils.js";
 import { getPricingForCharger } from "../services/billing.service.js";
 import * as walletService from "../services/wallet.service.js";
 
@@ -54,6 +57,10 @@ export const getAllChargers = async (req, res, next) => {
       prisma.charger.count({ where }),
     ]);
 
+    // Resolve the tier once for the entire response. Pricing data is already
+    // included in the query above, so this adds no database or API calls.
+    const currentPricingTier = getCurrentPricingTier();
+
     // Merge with in-memory state
     const chargers = dbChargers.map((charger) => {
       const online = isChargerOnline(charger.id);
@@ -89,7 +96,20 @@ export const getAllChargers = async (req, res, next) => {
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
         lastHeartbeat: charger.lastHeartbeat, // Ideally we'd get this from memory too
         lastSeen: charger.lastSeen,
-        station: charger.station,
+        station: charger.station
+          ? {
+              ...charger.station,
+              pricing: charger.station.pricing
+                ? {
+                    ...charger.station.pricing,
+                    ...resolveCurrentTierPricing(
+                      charger.station.pricing,
+                      currentPricingTier,
+                    ),
+                  }
+                : null,
+            }
+          : null,
         connectors: connectors,
       };
     });
@@ -819,18 +839,8 @@ export async function getChargerPricingEndpoint(req, res, next) {
       });
     }
 
-    // Resolve current TOU tier
-    let currentTier = null;
-    let currentTierPrice = null;
-
-    if (pricing.isTouEnabled) {
-      const tier = getCurrentPricingTier();
-      currentTier = tier;
-      if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = pricing.peakPrice.toString();
-      else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = pricing.dayPrice.toString();
-      else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = pricing.offPeakPrice.toString();
-      else currentTierPrice = pricing.pricePerKwh.toString();
-    }
+    const { currentTier, currentTierPrice } =
+      resolveCurrentTierPricing(pricing);
 
     res.json({
       success: true,
