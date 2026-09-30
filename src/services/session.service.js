@@ -338,6 +338,7 @@ export async function getActiveSessionsForUser(userId) {
         include: {
           station: {
             select: {
+              id: true,
               name: true,
               address: true,
             },

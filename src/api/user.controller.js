@@ -290,6 +290,7 @@ export async function getActiveSessions(req, res) {
         energyUsedKwh: (s.energyUsedWh / 1000).toFixed(2),
         totalCost: s.totalCost?.toString() || "0.00",
         pricePerKwh: s.pricePerKwh?.toString() || "0.00",
+        presetAmount: s.presetAmount?.toString() || null,
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         connectorId: s.connector?.connectorId || 1,
@@ -300,6 +301,7 @@ export async function getActiveSessions(req, res) {
                 model: s.charger.model,
                 station: s.charger.station
                     ? {
+                        id: s.charger.station.id,
                         name: s.charger.station.name,
                         address: s.charger.station.address,
                     }
