@@ -473,6 +473,7 @@ export const startCharging = async (req, res, next) => {
       userId,
       connectorId: validConnectorId,
       presetAmount: lockedAmount,
+      clientCompatibility: req.clientCompatibility,
     });
 
     // Charger rejected request
@@ -766,6 +767,10 @@ export async function getLiveSession(req, res) {
         totalCost: true,
         pricePerKwh: true,
         chargerId: true,
+        pricingMode: true,
+        basePricePerKwh: true,
+        lockedPricePerKwh: true,
+        membershipDiscountRate: true,
       },
     }),
   ]);
@@ -785,15 +790,25 @@ export async function getLiveSession(req, res) {
   try {
     if (session?.chargerId) {
       const pricing = await getPricingForCharger(session.chargerId);
-      isTouEnabled = !!pricing.isTouEnabled;
+      const sessionUsesDynamicTou = session?.pricingMode === "DYNAMIC_TOU" || session?.pricingMode == null;
+      isTouEnabled = !!pricing.isTouEnabled && sessionUsesDynamicTou;
 
-      if (pricing.isTouEnabled) {
+      if (isTouEnabled) {
         const tier = getCurrentPricingTier();
         currentTier = tier;
-        if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = pricing.peakPrice.toString();
-        else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = pricing.dayPrice.toString();
-        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = pricing.offPeakPrice.toString();
-        else currentTierPrice = pricing.pricePerKwh.toString();
+        let tierPrice = pricing.pricePerKwh;
+        if (tier === 'PEAK' && pricing.peakPrice) tierPrice = pricing.peakPrice;
+        else if (tier === 'DAY' && pricing.dayPrice) tierPrice = pricing.dayPrice;
+        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) tierPrice = pricing.offPeakPrice;
+
+        // New sessions retain their membership discount snapshot for the
+        // whole charge. Pre-rollout sessions keep the legacy raw response.
+        if (session?.pricingMode === "DYNAMIC_TOU") {
+          const discount = Number(session.membershipDiscountRate?.toString() || "0");
+          tierPrice = new Decimal(tierPrice.toString())
+            .times(new Decimal(1).minus(new Decimal(discount).dividedBy(100)));
+        }
+        currentTierPrice = tierPrice.toString();
       }
     }
   } catch (e) {
@@ -812,6 +827,8 @@ export async function getLiveSession(req, res) {
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
       pricePerKwh: session?.pricePerKwh?.toString() ?? null,
+      pricingMode: session?.pricingMode ?? null,
+      membershipDiscountRate: session?.membershipDiscountRate?.toString() ?? null,
       // TOU fields
       isTouEnabled,
       currentTier,
