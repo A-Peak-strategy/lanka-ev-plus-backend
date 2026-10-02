@@ -10,6 +10,7 @@ import connectorRoutes from "./api/connector.routes.js";
 import userRoutes from "./api/user.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.middleware.js";
 import appConfigRoutes from "./api/appConfig.routes.js";
+import authRoutes from "./api/auth.routes.js";
 
 const app = express();
 
@@ -121,6 +122,7 @@ app.use("/api/connectors", connectorRoutes);
 app.use("/api/user", userRoutes);
 app.use("/api", adminRoutes);
 app.use("/api/app-config", appConfigRoutes);
+app.use("/api/auth", authRoutes);
 
 // ============================================
 // ERROR HANDLING

@@ -43,3 +43,38 @@ export function getCurrentPricingTier(date = new Date()) {
     return 'OFF_PEAK';
   }
 }
+
+/**
+ * Resolve the active TOU tier and price for a pricing record.
+ *
+ * Flat pricing and incomplete TOU configurations deliberately return null
+ * tier fields so clients can safely fall back to pricePerKwh.
+ *
+ * @param {object|null|undefined} pricing
+ * @param {string} tier
+ * @returns {{ currentTier: string|null, currentTierPrice: string|null }}
+ */
+export function resolveCurrentTierPricing(
+  pricing,
+  tier = getCurrentPricingTier(),
+) {
+  if (!pricing?.isTouEnabled) {
+    return { currentTier: null, currentTierPrice: null };
+  }
+
+  const priceByTier = {
+    PEAK: pricing.peakPrice,
+    DAY: pricing.dayPrice,
+    OFF_PEAK: pricing.offPeakPrice,
+  };
+  const tierPrice = priceByTier[tier];
+
+  if (tierPrice == null) {
+    return { currentTier: null, currentTierPrice: null };
+  }
+
+  return {
+    currentTier: tier,
+    currentTierPrice: tierPrice.toString(),
+  };
+}
