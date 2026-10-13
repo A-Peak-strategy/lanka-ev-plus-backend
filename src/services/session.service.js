@@ -33,6 +33,12 @@ export async function createSession(data) {
     timestamp,
     pricePerKwh,
     presetAmount,
+    pricingMode,
+    basePricePerKwh,
+    lockedPricePerKwh,
+    membershipDiscountRate,
+    clientVersion,
+    clientPlatform,
   } = data;
 
   // Idempotency check - prevent duplicate session creation
@@ -111,6 +117,14 @@ export async function createSession(data) {
       meterStartWh: meterStart || 0,
       startedAt: timestamp ? new Date(timestamp) : new Date(),
       pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
+      pricingMode: pricingMode || null,
+      basePricePerKwh: basePricePerKwh ? new Decimal(basePricePerKwh).toFixed(2) : null,
+      lockedPricePerKwh: lockedPricePerKwh ? new Decimal(lockedPricePerKwh).toFixed(2) : null,
+      membershipDiscountRate: membershipDiscountRate != null
+        ? new Decimal(membershipDiscountRate).toFixed(2)
+        : null,
+      clientVersion: clientVersion || null,
+      clientPlatform: clientPlatform || null,
       presetAmount: presetAmount ? new Decimal(presetAmount).toFixed(2) : null,
       lastBilledWh: meterStart || 0,
       status: "PENDING",

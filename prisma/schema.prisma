@@ -326,6 +326,14 @@ model ChargingSession {
   
   // Billing
   pricePerKwh     Decimal?  @db.Decimal(10, 2)
+  // Additive compatibility snapshot. Null values mean the session was
+  // created before this migration and keeps the historic billing behaviour.
+  pricingMode     String?   @db.VarChar(32)
+  basePricePerKwh Decimal?  @db.Decimal(10, 2)
+  lockedPricePerKwh Decimal? @db.Decimal(10, 2)
+  membershipDiscountRate Decimal? @db.Decimal(5, 2)
+  clientVersion   String?   @db.VarChar(64)
+  clientPlatform  String?   @db.VarChar(24)
   totalCost       Decimal   @default(0) @db.Decimal(12, 2)
   ownerEarning    Decimal   @default(0) @db.Decimal(12, 2)
   commission      Decimal   @default(0) @db.Decimal(12, 2)

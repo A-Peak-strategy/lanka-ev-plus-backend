@@ -10,6 +10,7 @@ import { startGracePeriod, cancelGracePeriod } from "./gracePeriod.service.js";
 import notificationService from "./notification.service.js";
 import { getCurrentPricingTier } from "../utils/timeUtils.js";
 import stationMembershipService from "./stationMembership.service.js";
+import { resolveSessionMeterPrice } from "./sessionPricing.service.js";
 
 // Configure Decimal.js
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
@@ -199,23 +200,25 @@ export async function processMeterValuesBilling({
 
   // Get pricing
   const pricing = await getPricingForCharger(chargerId);
-  let currentPriceStr = pricing.pricePerKwh.toString();
-  if (pricing.isTouEnabled) {
-    const tier = getCurrentPricingTier();
-    if (tier === 'PEAK' && pricing.peakPrice) currentPriceStr = pricing.peakPrice.toString();
-    else if (tier === 'DAY' && pricing.dayPrice) currentPriceStr = pricing.dayPrice.toString();
-    else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentPriceStr = pricing.offPeakPrice.toString();
+  // Pre-rollout sessions have a null mode and keep the former dynamic
+  // membership behaviour. New sessions use their immutable snapshot, which
+  // avoids a membership query on every MeterValues message.
+  let legacyMembershipDiscountRate = "0";
+  if (session.pricingMode == null) {
+    const membership = await stationMembershipService.getActiveMembershipForCharging(
+      session.userId,
+      chargerId
+    );
+    legacyMembershipDiscountRate = membership?.discountRate?.toString() || "0";
   }
-  const basePricePerKwh = new Decimal(currentPriceStr);
-  // Validate membership at billing time against the user's station and its
-  // current validity period. This deliberately avoids altering the live
-  // ChargingSession table.
-  const membership = await stationMembershipService.getActiveMembershipForCharging(
-    session.userId,
-    chargerId
-  );
-  const membershipDiscountRate = new Decimal(membership?.discountRate?.toString() || "0");
-  const pricePerKwh = basePricePerKwh.times(new Decimal(1).minus(membershipDiscountRate.dividedBy(100)));
+  const resolvedRate = resolveSessionMeterPrice({
+    session,
+    pricing,
+    legacyMembershipDiscountRate,
+  });
+  const basePricePerKwh = resolvedRate.basePricePerKwh;
+  const membershipDiscountRate = resolvedRate.membershipDiscountRate;
+  const pricePerKwh = resolvedRate.pricePerKwh;
   const commissionRate = new Decimal(pricing.commissionRate.toString());
 
   // Calculate cost for incremental energy

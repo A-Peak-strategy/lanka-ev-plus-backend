@@ -11,6 +11,9 @@ import { clearPendingStartWatchdog } from "../commands/remoteStartTransaction.js
 import prisma from "../../config/db.js";
 import Decimal from "decimal.js";
 import * as walletService from "../../services/wallet.service.js";
+import stationMembershipService from "../../services/stationMembership.service.js";
+import { PricingMode } from "../../middleware/clientCompatibility.middleware.js";
+import { resolveSessionStartPricing } from "../../services/sessionPricing.service.js";
 
 /**
  * OCPP StartTransaction Handler
@@ -76,6 +79,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
   const cachedState = chargersStore.get(getChargerKey(chargerId, connectorId));
   const pendingUserId = cachedState?.pendingUserId;
   const pendingPresetAmount = cachedState?.pendingPresetAmount;
+  const pendingClientCompatibility = cachedState?.pendingClientCompatibility;
   const userId = pendingUserId || await resolveUserFromIdTag(idTag);
 
   console.log(`[START] userId resolution: pendingUserId=${pendingUserId}, resolvedUserId=${userId}${pendingPresetAmount ? `, presetAmount: LKR ${pendingPresetAmount}` : ''}`);
@@ -92,6 +96,24 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     console.log(`[START] Connector lock failed: ${lockResult.reason}`);
     // Still allow - lock is for booking system, not hard requirement
   }
+
+  // This is saved with the session, rather than read on each MeterValues
+  // message. If the temporary in-memory remote-start state was lost, the
+  // conservative legacy mode is selected automatically.
+  const pricingMode = pendingClientCompatibility?.pricingMode === PricingMode.DYNAMIC_TOU
+    ? PricingMode.DYNAMIC_TOU
+    : PricingMode.LEGACY_FLAT;
+  let membershipDiscountRate = "0";
+  if (userId && pricingMode === PricingMode.DYNAMIC_TOU && pendingClientCompatibility?.applyMembershipPricing) {
+    const membership = await stationMembershipService.getActiveMembershipForCharging(userId, chargerId);
+    membershipDiscountRate = membership?.discountRate?.toString() || "0";
+  }
+  const sessionPricing = resolveSessionStartPricing({
+    pricing,
+    pricingMode,
+    membershipDiscountRate,
+    now: startTime,
+  });
 
   // Resolve presetAmount (assign default for walk-ins/RFID starts)
   let sessionPresetAmount = pendingPresetAmount || null;
@@ -124,7 +146,14 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     userId,
     meterStart,
     timestamp: startTime,
-    pricePerKwh: pricing?.pricePerKwh,
+    // Keep the established internal input type for existing callers/tests.
+    pricePerKwh: Number(sessionPricing.effectiveStartPricePerKwh),
+    pricingMode: sessionPricing.pricingMode,
+    basePricePerKwh: sessionPricing.basePricePerKwh,
+    lockedPricePerKwh: sessionPricing.lockedPricePerKwh,
+    membershipDiscountRate: sessionPricing.membershipDiscountRate,
+    clientVersion: pendingClientCompatibility?.appVersion,
+    clientPlatform: pendingClientCompatibility?.platform,
     presetAmount: sessionPresetAmount,
   });
 
@@ -150,6 +179,7 @@ export default async function startTransaction(ws, messageId, chargerId, payload
     userId,
     pendingUserId: null,  // Clear after session created
     pendingPresetAmount: null, // Clear after session created
+    pendingClientCompatibility: null,
     sessionStartTime: startTime,
     bookingId: authResult.bookingId || null,
   });

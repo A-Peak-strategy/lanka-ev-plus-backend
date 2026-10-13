@@ -159,7 +159,10 @@ export async function topUpWallet(req, res) {
     res.status(500).json({
       success: false,
       error: "Failed to initiate payment",
-      message: error.message
+      errorCode: "PAYMENT_INITIATION_FAILED",
+      code: "PAYMENT_INITIATION_FAILED",
+      message: "We could not start the top-up. Please try again.",
+      ...(req.id ? { requestId: req.id } : {}),
     });
   }
 }
@@ -504,7 +507,10 @@ export async function releaseChargingAmount(req, res) {
     res.status(500).json({
       success: false,
       error: "Failed to release charging amount",
-      message: error.message,
+      errorCode: "CHARGING_AMOUNT_RELEASE_FAILED",
+      code: "CHARGING_AMOUNT_RELEASE_FAILED",
+      message: "We could not update the charging amount. Please try again.",
+      ...(req.id ? { requestId: req.id } : {}),
     });
   }
 }
