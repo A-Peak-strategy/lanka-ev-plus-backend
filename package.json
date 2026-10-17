@@ -19,6 +19,7 @@
     "db:seed:real-charger": "node prisma/seed-real-charger.js",
     "db:seed:firebase": "node scripts/createFirebaseUsers.js",
     "db:credentials": "node scripts/viewCredentials.js",
+    "auth:cleanup-unverified": "node scripts/cleanupUnverifiedUsers.js",
     "db:reset": "prisma migrate reset --skip-seed"
   },
   "dependencies": {
@@ -34,6 +35,7 @@
     "firebase-admin": "^12.7.0",
     "ioredis": "^5.4.1",
     "luxon": "^3.7.2",
+    "nodemailer": "^7.0.13",
     "prisma": "^6.19.1",
     "qrcode": "^1.5.4",
     "uuid": "^9.0.1",

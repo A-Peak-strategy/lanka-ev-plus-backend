@@ -51,6 +51,16 @@ describe("Billing Service - Pure Functions", () => {
   });
 
   describe("calculateEarningsSplit", () => {
+    it("calculates commission from the discounted member amount", () => {
+      // LKR 100/kWh with 15% membership discount => customer pays LKR 85.
+      const baseRate = new Decimal(100);
+      const discountedAmount = baseRate.times(new Decimal(1).minus(new Decimal(15).dividedBy(100)));
+      const commission = discountedAmount.times(new Decimal(2).dividedBy(100));
+
+      expect(discountedAmount.toFixed(2)).toBe("85.00");
+      expect(commission.toFixed(2)).toBe("1.70");
+    });
+
     it("should correctly split earnings with 15% commission", () => {
       const totalAmount = new Decimal(100);
       const commissionRate = new Decimal(15);

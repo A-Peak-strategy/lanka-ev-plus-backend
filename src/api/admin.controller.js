@@ -7,6 +7,8 @@ import { isChargerOnline } from "../ocpp/ocppServer.js";
 import { remoteStopTransaction } from "../ocpp/commands/remoteStopTransaction.js";
 import { remoteStartTransaction } from "../ocpp/commands/remoteStartTransaction.js";
 import { v4 as uuidv4 } from "uuid";
+import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import stationMembershipService from "../services/stationMembership.service.js";
 
 /**
  * Admin Controller
@@ -55,19 +57,26 @@ export async function createOwner(req, res) {
 export async function getUsers(req, res) {
   try {
     const { role, isActive, limit, offset, search } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const users = await adminService.getUsers({
+    const { data, total } = await adminService.getUsers({
       role,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
       search,
     });
 
     res.json({
       success: true,
-      data: users,
-      count: users.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get users error:", error);
@@ -173,19 +182,26 @@ export async function registerCharger(req, res) {
 export async function getChargers(req, res) {
   try {
     const { stationId, status, isRegistered, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const chargers = await adminService.getChargers({
+    const { data, total } = await adminService.getChargers({
       stationId,
       status,
       isRegistered: isRegistered === "true" ? true : isRegistered === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: chargers,
-      count: chargers.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get chargers error:", error);
@@ -262,18 +278,25 @@ export async function createStation(req, res) {
 export async function getStations(req, res) {
   try {
     const { ownerId, isActive, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const stations = await adminService.getStations({
+    const { data, total } = await adminService.getStations({
       ownerId,
       isActive: isActive === "true" ? true : isActive === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: stations,
-      count: stations.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get stations error:", error);
@@ -401,8 +424,10 @@ export async function assignPricingToStation(req, res) {
 export async function getSessions(req, res) {
   try {
     const { chargerId, userId, stationId, ownerId, startDate, endDate, active, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const sessions = await adminService.getSessions({
+    const { data, total } = await adminService.getSessions({
       chargerId,
       userId,
       stationId,
@@ -410,14 +435,19 @@ export async function getSessions(req, res) {
       startDate,
       endDate,
       active: active === "true" ? true : active === "false" ? false : undefined,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: sessions,
-      count: sessions.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get sessions error:", error);
@@ -461,21 +491,28 @@ export async function getSessionStats(req, res) {
 export async function getOcppLogs(req, res) {
   try {
     const { chargerId, action, direction, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const logs = await adminService.getOcppLogs({
+    const { data, total } = await adminService.getOcppLogs({
       chargerId,
       action,
       direction,
       startDate,
       endDate,
-      limit: parseInt(limit) || 100,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: logs,
-      count: logs.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get OCPP logs error:", error);
@@ -494,20 +531,27 @@ export async function getOcppLogs(req, res) {
 export async function getSettlements(req, res) {
   try {
     const { ownerId, status, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const settlements = await settlementService.getSettlements({
+    const { data, total } = await settlementService.getSettlements({
       ownerId,
       status,
       startDate,
       endDate,
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: settlements,
-      count: settlements.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get settlements error:", error);
@@ -716,12 +760,23 @@ export async function deleteSettlement(req, res) {
 export async function getOwnerPaymentHistory(req, res) {
   try {
     const { ownerId } = req.params;
+    const parsedLimit = parseInt(req.query.limit) || 25;
+    const parsedOffset = parseInt(req.query.offset) || 0;
 
-    const history = await settlementService.getOwnerPaymentHistory(ownerId);
+    const { data, total } = await settlementService.getOwnerPaymentHistory(ownerId, {
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
 
     res.json({
       success: true,
-      data: history,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get payment history error:", error);
@@ -827,21 +882,28 @@ export async function recordOwnerPayment(req, res) {
 export async function getAuditLogs(req, res) {
   try {
     const { adminId, action, targetType, startDate, endDate, limit, offset } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
 
-    const logs = await adminService.getAuditLogs({
+    const { data, total } = await adminService.getAuditLogs({
       adminId,
       action,
       targetType,
       startDate,
       endDate,
-      limit: parseInt(limit) || 100,
-      offset: parseInt(offset) || 0,
+      limit: parsedLimit,
+      offset: parsedOffset,
     });
 
     res.json({
       success: true,
-      data: logs,
-      count: logs.length,
+      data,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: parsedOffset + data.length < total,
+      },
     });
   } catch (error) {
     console.error("Get audit logs error:", error);
@@ -1002,7 +1064,7 @@ export async function updateStation(req, res) {
     const { stationId } = req.params;
     const adminId = req.user?.id || "system";
 
-    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled", "googleMapsLink"];
+    const allowedFields = ["name", "address", "latitude", "longitude", "pricingId", "isActive", "bookingEnabled", "membershipEnabled", "googleMapsLink"];
     const data = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) {
@@ -1343,11 +1405,28 @@ export async function getActiveSessionForCharger(req, res) {
       take: 10,
     });
 
-    // 5) Get pricing for cost calculation
+    // 5) Get pricing for cost calculation — resolve TOU tier
     let energyRatePerKwh = 30; // default fallback
+    let currentTier = null;
+    let currentTierPrice = null;
+    let isTouEnabled = false;
+
     if (charger?.station?.pricing) {
       const pricing = charger.station.pricing;
-      if (pricing.perKwh) energyRatePerKwh = parseFloat(pricing.perKwh);
+      energyRatePerKwh = parseFloat(pricing.pricePerKwh) || 30;
+      isTouEnabled = !!pricing.isTouEnabled;
+
+      if (pricing.isTouEnabled) {
+        const tier = getCurrentPricingTier();
+        currentTier = tier;
+        if (tier === 'PEAK' && pricing.peakPrice) currentTierPrice = parseFloat(pricing.peakPrice);
+        else if (tier === 'DAY' && pricing.dayPrice) currentTierPrice = parseFloat(pricing.dayPrice);
+        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentTierPrice = parseFloat(pricing.offPeakPrice);
+        else currentTierPrice = energyRatePerKwh;
+
+        // When TOU is enabled, the effective rate is the current tier price
+        energyRatePerKwh = currentTierPrice;
+      }
     }
 
     res.json({
@@ -1356,6 +1435,9 @@ export async function getActiveSessionForCharger(req, res) {
         activeSessions,
         connectorStatuses,
         energyRatePerKwh,
+        currentTier,
+        currentTierPrice,
+        isTouEnabled,
         recentSessions,
       },
     });
@@ -1584,6 +1666,169 @@ export async function deletePricing(req, res) {
   }
 }
 
+// ============================================
+// PAYOUTS
+// ============================================
+
+/**
+ * Get all owners payout summary
+ * GET /api/admin/payouts/owners-summary
+ */
+export async function getPayoutOwnersSummary(req, res) {
+  try {
+    const summaries = await settlementService.getAllOwnersPayoutSummary();
+
+    res.json({
+      success: true,
+      data: summaries,
+      count: summaries.length,
+    });
+  } catch (error) {
+    console.error("Get payout owners summary error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+/**
+ * Get detailed payout data for a specific owner
+ * GET /api/admin/payouts/owners/:ownerId
+ */
+export async function getPayoutOwnerDetail(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const detail = await settlementService.getOwnerPayoutDetail(ownerId);
+
+    res.json({
+      success: true,
+      data: detail,
+    });
+  } catch (error) {
+    console.error("Get payout owner detail error:", error);
+    res.status(error.message === "Owner not found" ? 404 : 500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+/**
+ * Process a payout for an owner (deducts from wallet)
+ * POST /api/admin/payouts/owners/:ownerId/payout
+ */
+export async function processPayoutForOwner(req, res) {
+  try {
+    const { ownerId } = req.params;
+    const adminId = req.user?.id || "system";
+    const { amount, paymentRef, paymentMethod, paymentNotes } = req.body;
+
+    if (!amount || parseFloat(amount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Valid payout amount is required",
+      });
+    }
+
+    const result = await settlementService.processOwnerPayout(
+      ownerId,
+      { amount, paymentRef, paymentMethod, paymentNotes },
+      adminId
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      message: `Payout of LKR ${parseFloat(amount).toFixed(2)} processed successfully`,
+    });
+  } catch (error) {
+    console.error("Process payout error:", error);
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+// ============================================
+// STATION MEMBERSHIPS
+// ============================================
+
+export async function getMembershipRequests(req, res) {
+  try {
+    const result = await stationMembershipService.listRequests(req.query);
+    res.json({ success: true, ...result, count: result.data.length });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function getMembershipRequest(req, res) {
+  try {
+    res.json({ success: true, data: await stationMembershipService.getRequest(req.params.requestId) });
+  } catch (error) {
+    res.status(error.message.includes("not found") ? 404 : 400).json({ success: false, error: error.message });
+  }
+}
+
+export async function recordMembershipPayment(req, res) {
+  try {
+    const data = await stationMembershipService.recordPayment(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Bank transfer recorded" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function setMembershipPaymentInstructions(req, res) {
+  try {
+    const data = await stationMembershipService.setPaymentInstructions(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Bank-transfer payment instructions set" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function approveMembershipRequest(req, res) {
+  try {
+    const data = await stationMembershipService.approveRequest(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership approved" });
+  } catch (error) {
+    res.status(error.message.includes("already") ? 409 : 400).json({ success: false, error: error.message });
+  }
+}
+
+export async function rejectMembershipRequest(req, res) {
+  try {
+    const data = await stationMembershipService.rejectRequest(req.params.requestId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership request rejected" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function getStationMemberships(req, res) {
+  try {
+    const result = await stationMembershipService.listMemberships(req.query);
+    res.json({ success: true, ...result, count: result.data.length });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function updateStationMembership(req, res) {
+  try {
+    const data = await stationMembershipService.updateMembership(req.params.membershipId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership updated" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
+export async function revokeStationMembership(req, res) {
+  try {
+    const data = await stationMembershipService.revokeMembership(req.params.membershipId, req.body, req.user.id);
+    res.json({ success: true, data, message: "Station membership revoked" });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+}
+
 export default {
   // Users
   createOwner,
@@ -1653,6 +1898,22 @@ export default {
   generateChargerQR,
   regenerateChargerQR,
   getChargerQR,
+
+  // Payouts
+  getPayoutOwnersSummary,
+  getPayoutOwnerDetail,
+  processPayoutForOwner,
+
+  // Station memberships
+  getMembershipRequests,
+  getMembershipRequest,
+  recordMembershipPayment,
+  setMembershipPaymentInstructions,
+  approveMembershipRequest,
+  rejectMembershipRequest,
+  getStationMemberships,
+  updateStationMembership,
+  revokeStationMembership,
 
   // Debug
   adminRemoteStart,

@@ -7,6 +7,11 @@ import prisma from "../config/db.js";
 import { NotFoundError, ChargerOfflineError, ConflictError, ValidationError } from "../errors/index.js";
 import { validateChargerId, validateConnectorId } from "../utils/validation.js";
 import sessionService from "../services/session.service.js";
+import {
+  getCurrentPricingTier,
+  resolveCurrentTierPricing,
+} from "../utils/timeUtils.js";
+import { getPricingForCharger } from "../services/billing.service.js";
 import * as walletService from "../services/wallet.service.js";
 
 /**
@@ -16,26 +21,45 @@ import * as walletService from "../services/wallet.service.js";
  */
 export const getAllChargers = async (req, res, next) => {
   try {
-    // Get chargers from database
-    const dbChargers = await prisma.charger.findMany({
-      include: {
-        station: {
-          select: {
-            id: true,
-            name: true,
-            address: true,
-            pricing: true,
+    const { stationId, status, limit, offset } = req.query;
+    const parsedLimit = limit ? parseInt(limit) : undefined;
+    const parsedOffset = offset ? parseInt(offset) : undefined;
+
+    const where = {};
+    if (stationId) where.stationId = stationId;
+    if (status) where.status = status;
+
+    // Get chargers from database along with total count
+    const [dbChargers, total] = await Promise.all([
+      prisma.charger.findMany({
+        where,
+        include: {
+          station: {
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              membershipEnabled: true,
+              pricing: true,
+            },
+          },
+          connectors: {
+            select: {
+              connectorId: true,
+              status: true,
+            },
           },
         },
-        connectors: {
-          select: {
-            connectorId: true,
-            status: true,
-          },
-        },
-      },
-      orderBy: { lastSeen: "desc" },
-    });
+        orderBy: { lastSeen: "desc" },
+        take: parsedLimit,
+        skip: parsedOffset,
+      }),
+      prisma.charger.count({ where }),
+    ]);
+
+    // Resolve the tier once for the entire response. Pricing data is already
+    // included in the query above, so this adds no database or API calls.
+    const currentPricingTier = getCurrentPricingTier();
 
     // Merge with in-memory state
     const chargers = dbChargers.map((charger) => {
@@ -72,7 +96,20 @@ export const getAllChargers = async (req, res, next) => {
         connectionState: online ? "CONNECTED" : "DISCONNECTED",
         lastHeartbeat: charger.lastHeartbeat, // Ideally we'd get this from memory too
         lastSeen: charger.lastSeen,
-        station: charger.station,
+        station: charger.station
+          ? {
+              ...charger.station,
+              pricing: charger.station.pricing
+                ? {
+                    ...charger.station.pricing,
+                    ...resolveCurrentTierPricing(
+                      charger.station.pricing,
+                      currentPricingTier,
+                    ),
+                  }
+                : null,
+            }
+          : null,
         connectors: connectors,
       };
     });
@@ -82,6 +119,12 @@ export const getAllChargers = async (req, res, next) => {
       count: chargers.length,
       onlineCount: getConnectedChargerIds().length,
       chargers,
+      pagination: {
+        total,
+        limit: parsedLimit || total,
+        offset: parsedOffset || 0,
+        hasMore: (parsedOffset || 0) + chargers.length < total,
+      },
     });
   } catch (error) {
     next(error);
@@ -103,7 +146,11 @@ export const getCharger = async (req, res, next) => {
     const charger = await prisma.charger.findUnique({
       where: { id: chargerId },
       include: {
-        station: true,
+        station: {
+          include: {
+            pricing: true,
+          },
+        },
         connectors: true,
         sessions: {
           take: 10,
@@ -426,6 +473,7 @@ export const startCharging = async (req, res, next) => {
       userId,
       connectorId: validConnectorId,
       presetAmount: lockedAmount,
+      clientCompatibility: req.clientCompatibility,
     });
 
     // Charger rejected request
@@ -652,6 +700,8 @@ export const getChargerSessions = async (req, res, next) => {
   try {
     const { chargerId } = req.params;
     const { limit = 20, offset = 0, active } = req.query;
+    const parsedLimit = parseInt(limit) || 20;
+    const parsedOffset = parseInt(offset) || 0;
 
     validateChargerId(chargerId);
 
@@ -662,22 +712,32 @@ export const getChargerSessions = async (req, res, next) => {
       where.endedAt = { not: null };
     }
 
-    const sessions = await prisma.chargingSession.findMany({
-      where,
-      orderBy: { startedAt: "desc" },
-      take: parseInt(limit) || 20,
-      skip: parseInt(offset) || 0,
-      include: {
-        user: {
-          select: { id: true, name: true },
+    const [sessions, total] = await Promise.all([
+      prisma.chargingSession.findMany({
+        where,
+        orderBy: { startedAt: "desc" },
+        take: parsedLimit,
+        skip: parsedOffset,
+        include: {
+          user: {
+            select: { id: true, name: true },
+          },
         },
-      },
-    });
+      }),
+      prisma.chargingSession.count({ where }),
+    ]);
 
     res.json({
       success: true,
       count: sessions.length,
       sessions,
+      pagination: {
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        totalPages: Math.ceil(total / parsedLimit),
+        hasMore: parsedOffset + sessions.length < total,
+      },
     });
   } catch (error) {
     next(error);
@@ -706,6 +766,11 @@ export async function getLiveSession(req, res) {
       select: {
         totalCost: true,
         pricePerKwh: true,
+        chargerId: true,
+        pricingMode: true,
+        basePricePerKwh: true,
+        lockedPricePerKwh: true,
+        membershipDiscountRate: true,
       },
     }),
   ]);
@@ -715,6 +780,39 @@ export async function getLiveSession(req, res) {
       success: false,
       message: "Live session not found"
     });
+  }
+
+  // Resolve TOU pricing tier for the current moment
+  let currentTier = null;
+  let currentTierPrice = null;
+  let isTouEnabled = false;
+
+  try {
+    if (session?.chargerId) {
+      const pricing = await getPricingForCharger(session.chargerId);
+      const sessionUsesDynamicTou = session?.pricingMode === "DYNAMIC_TOU" || session?.pricingMode == null;
+      isTouEnabled = !!pricing.isTouEnabled && sessionUsesDynamicTou;
+
+      if (isTouEnabled) {
+        const tier = getCurrentPricingTier();
+        currentTier = tier;
+        let tierPrice = pricing.pricePerKwh;
+        if (tier === 'PEAK' && pricing.peakPrice) tierPrice = pricing.peakPrice;
+        else if (tier === 'DAY' && pricing.dayPrice) tierPrice = pricing.dayPrice;
+        else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) tierPrice = pricing.offPeakPrice;
+
+        // New sessions retain their membership discount snapshot for the
+        // whole charge. Pre-rollout sessions keep the legacy raw response.
+        if (session?.pricingMode === "DYNAMIC_TOU") {
+          const discount = Number(session.membershipDiscountRate?.toString() || "0");
+          tierPrice = new Decimal(tierPrice.toString())
+            .times(new Decimal(1).minus(new Decimal(discount).dividedBy(100)));
+        }
+        currentTierPrice = tierPrice.toString();
+      }
+    }
+  } catch (e) {
+    console.warn('[getLiveSession] Failed to resolve TOU pricing:', e.message);
   }
 
   res.json({
@@ -729,45 +827,57 @@ export async function getLiveSession(req, res) {
       lastUpdated: live.lastMeterAt,
       totalCost: session?.totalCost?.toString() ?? "0.00",
       pricePerKwh: session?.pricePerKwh?.toString() ?? null,
+      pricingMode: session?.pricingMode ?? null,
+      membershipDiscountRate: session?.membershipDiscountRate?.toString() ?? null,
+      // TOU fields
+      isTouEnabled,
+      currentTier,
+      currentTierPrice,
     }
   });
 }
 
-
 /**
- * Get charger pricing
- * 
+ * Get pricing for a charger (includes TOU tiers and current active tier)
+ *
  * GET /api/chargers/:chargerId/pricing
  */
-export const getChargerPricing = async (req, res, next) => {
+export async function getChargerPricingEndpoint(req, res, next) {
   try {
     const { chargerId } = req.params;
-
     validateChargerId(chargerId);
 
-    const charger = await prisma.charger.findUnique({
-      where: { id: chargerId },
-      include: {
-        station: {
-          include: {
-            pricing: true,
-          },
-        },
-      },
-    });
+    const pricing = await getPricingForCharger(chargerId);
 
-    if (!charger) {
-      throw new NotFoundError("Charger", chargerId);
+    if (!pricing) {
+      return res.status(404).json({
+        success: false,
+        message: "No pricing configuration found for this charger",
+      });
     }
 
-    const pricing = charger.station?.pricing;
+    const { currentTier, currentTierPrice } =
+      resolveCurrentTierPricing(pricing);
 
     res.json({
       success: true,
-      pricing: pricing || null,
+      pricing: {
+        id: pricing.id,
+        name: pricing.name,
+        pricePerKwh: pricing.pricePerKwh?.toString(),
+        isTouEnabled: !!pricing.isTouEnabled,
+        peakPrice: pricing.peakPrice?.toString() ?? null,
+        dayPrice: pricing.dayPrice?.toString() ?? null,
+        offPeakPrice: pricing.offPeakPrice?.toString() ?? null,
+        commissionRate: pricing.commissionRate?.toString(),
+        gracePeriodSec: pricing.gracePeriodSec,
+        lowBalanceThreshold: pricing.lowBalanceThreshold?.toString(),
+        graceStartThreshold: pricing.graceStartThreshold?.toString(),
+        currentTier,
+        currentTierPrice,
+      },
     });
   } catch (error) {
     next(error);
   }
-};
-
+}

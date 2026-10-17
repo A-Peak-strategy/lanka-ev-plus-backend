@@ -461,17 +461,20 @@ export async function getSettlements(filters = {}) {
     if (endDate) where.periodStart.lte = new Date(endDate);
   }
 
-  const settlements = await prisma.settlement.findMany({
-    where,
-    include: {
-      items: {
-        take: 10, // Limit items for list view
+  const [settlements, total] = await Promise.all([
+    prisma.settlement.findMany({
+      where,
+      include: {
+        items: {
+          take: 10, // Limit items for list view
+        },
       },
-    },
-    orderBy: { periodStart: "desc" },
-    take: limit,
-    skip: offset,
-  });
+      orderBy: { periodStart: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.settlement.count({ where }),
+  ]);
 
   // Enrich with owner names
   const ownerIds = [...new Set(settlements.map((s) => s.ownerId))];
@@ -481,10 +484,12 @@ export async function getSettlements(filters = {}) {
   });
   const ownerMap = Object.fromEntries(owners.map((o) => [o.id, o]));
 
-  return settlements.map((s) => ({
+  const data = settlements.map((s) => ({
     ...s,
     owner: ownerMap[s.ownerId] || { name: null, email: null },
   }));
+
+  return { data, total };
 }
 
 /**
@@ -510,22 +515,20 @@ export async function getSettlementById(settlementId) {
  * @returns {Promise<object>}
  */
 export async function getPendingSettlementsSummary() {
-  const pending = await prisma.settlement.findMany({
+  // Use DB aggregation to avoid loading all PENDING settlements into memory
+  const agg = await prisma.settlement.aggregate({
     where: { status: "PENDING" },
+    _sum: {
+      netPayout: true,
+      sessionCount: true,
+    },
+    _count: { id: true },
   });
 
-  let totalAmount = new Decimal(0);
-  let totalSessions = 0;
-
-  for (const s of pending) {
-    totalAmount = totalAmount.plus(new Decimal(s.netPayout.toString()));
-    totalSessions += s.sessionCount;
-  }
-
   return {
-    count: pending.length,
-    totalAmount: totalAmount.toFixed(2),
-    totalSessions,
+    count: agg._count.id,
+    totalAmount: new Decimal(agg._sum.netPayout?.toString() || "0").toFixed(2),
+    totalSessions: agg._sum.sessionCount || 0,
   };
 }
 
@@ -566,31 +569,21 @@ export async function getOwnerEarningsSummary(ownerId, options = {}) {
     _count: { id: true },
   });
 
-  // Get pending payout amount (all-time, not date-filtered)
-  const pendingSettlements = await prisma.settlement.findMany({
-    where: {
-      ownerId,
-      status: "PENDING",
-    },
+  // Get pending payout amount (all-time, not date-filtered) — use aggregate
+  const pendingAgg = await prisma.settlement.aggregate({
+    where: { ownerId, status: "PENDING" },
+    _sum: { netPayout: true },
+    _count: { id: true },
   });
+  const pendingPayout = new Decimal(pendingAgg._sum.netPayout?.toString() || "0");
+  const pendingSettlementsCount = pendingAgg._count.id;
 
-  let pendingPayout = new Decimal(0);
-  for (const s of pendingSettlements) {
-    pendingPayout = pendingPayout.plus(new Decimal(s.netPayout.toString()));
-  }
-
-  // Get total paid out (all-time)
-  const paidSettlements = await prisma.settlement.findMany({
-    where: {
-      ownerId,
-      status: "PAID",
-    },
+  // Get total paid out (all-time) — use aggregate
+  const paidAgg = await prisma.settlement.aggregate({
+    where: { ownerId, status: "PAID" },
+    _sum: { netPayout: true },
   });
-
-  let totalPaidOut = new Decimal(0);
-  for (const s of paidSettlements) {
-    totalPaidOut = totalPaidOut.plus(new Decimal(s.netPayout.toString()));
-  }
+  const totalPaidOut = new Decimal(paidAgg._sum.netPayout?.toString() || "0");
 
   // All-time total earnings for balance calculation
   const allTimeSessions = startDate || endDate
@@ -614,7 +607,7 @@ export async function getOwnerEarningsSummary(ownerId, options = {}) {
     totalSessions: sessions._count.id,
     pendingPayout: pendingPayout.toFixed(2),
     totalPaidOut: totalPaidOut.toFixed(2),
-    pendingSettlementsCount: pendingSettlements.length,
+    pendingSettlementsCount,
     allTimeEarnings: allTimeEarnings.toFixed(2),
     remainingBalance: remainingBalance.toFixed(2),
   };
@@ -931,39 +924,407 @@ export async function deleteSettlement(settlementId, adminId) {
 
 /**
  * Get payment history for an owner
- * Returns all settlements (PAID, PENDING, FAILED) ordered by date
- * 
+ * Returns settlements (PAID, PENDING, FAILED) ordered by date, with pagination.
+ *
  * @param {string} ownerId
- * @returns {Promise<object[]>}
+ * @param {object} options - { limit, offset }
+ * @returns {Promise<object>} { data, total }
  */
-export async function getOwnerPaymentHistory(ownerId) {
-  const settlements = await prisma.settlement.findMany({
-    where: { ownerId },
-    orderBy: { createdAt: "desc" },
-    select: {
-      id: true,
-      periodStart: true,
-      periodEnd: true,
-      totalEarnings: true,
-      totalCommission: true,
-      netPayout: true,
-      sessionCount: true,
-      status: true,
-      paidAt: true,
-      paymentRef: true,
-      paymentMethod: true,
-      paymentNotes: true,
-      createdAt: true,
-    },
-  });
+export async function getOwnerPaymentHistory(ownerId, options = {}) {
+  const { limit = 25, offset = 0 } = options;
 
-  return settlements.map((s) => ({
+  const where = { ownerId };
+
+  const [settlements, total] = await Promise.all([
+    prisma.settlement.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+      select: {
+        id: true,
+        periodStart: true,
+        periodEnd: true,
+        totalEarnings: true,
+        totalCommission: true,
+        netPayout: true,
+        sessionCount: true,
+        status: true,
+        paidAt: true,
+        paymentRef: true,
+        paymentMethod: true,
+        paymentNotes: true,
+        createdAt: true,
+      },
+    }),
+    prisma.settlement.count({ where }),
+  ]);
+
+  const data = settlements.map((s) => ({
     ...s,
     totalEarnings: s.totalEarnings.toString(),
     totalCommission: s.totalCommission.toString(),
     netPayout: s.netPayout.toString(),
     type: s.sessionCount === 0 ? "MANUAL" : "BATCH",
   }));
+
+  return { data, total };
+}
+
+/**
+ * Process a payout to an owner (admin action)
+ * 
+ * Deducts from the owner's wallet balance and creates:
+ * - Settlement (status: PAID)
+ * - SettlementItem (placeholder for the payout)
+ * - Ledger entry (SETTLEMENT_PAYOUT)
+ * - AdminAuditLog entry
+ * 
+ * @param {string} ownerId
+ * @param {object} payoutDetails
+ * @param {string} adminId
+ * @returns {Promise<object>}
+ */
+export async function processOwnerPayout(ownerId, payoutDetails, adminId) {
+  const { amount, paymentRef, paymentMethod, paymentNotes } = payoutDetails;
+
+  if (!amount || parseFloat(amount) <= 0) {
+    throw new Error("Invalid payout amount");
+  }
+
+  const owner = await prisma.user.findUnique({ where: { id: ownerId } });
+  if (!owner || owner.role !== "OWNER") {
+    throw new Error("Owner not found");
+  }
+
+  const payoutAmount = new Decimal(amount);
+
+  // Check owner's wallet balance
+  let ownerWallet = await prisma.wallet.findUnique({
+    where: { userId: ownerId },
+  });
+
+  if (!ownerWallet) {
+    throw new Error("Owner wallet not found. No earnings recorded yet.");
+  }
+
+  const walletBalance = new Decimal(ownerWallet.balance.toString());
+
+  if (walletBalance.lt(payoutAmount)) {
+    throw new Error(
+      `Insufficient wallet balance. Available: LKR ${walletBalance.toFixed(2)}, Requested: LKR ${payoutAmount.toFixed(2)}`
+    );
+  }
+
+  const now = new Date();
+
+  // Execute everything in a single transaction
+  const result = await prisma.$transaction(async (tx) => {
+    // 1. Deduct from owner wallet with optimistic locking
+    const currentWallet = await tx.wallet.findUnique({
+      where: { userId: ownerId },
+    });
+
+    const currentBalance = new Decimal(currentWallet.balance.toString());
+    const newBalance = currentBalance.minus(payoutAmount);
+
+    await tx.wallet.update({
+      where: {
+        userId: ownerId,
+        version: currentWallet.version,
+      },
+      data: {
+        balance: newBalance.toFixed(2),
+        version: { increment: 1 },
+      },
+    });
+
+    // 2. Create Settlement record (status: PAID)
+    const settlement = await tx.settlement.create({
+      data: {
+        ownerId,
+        periodStart: now,
+        periodEnd: now,
+        totalEarnings: payoutAmount,
+        totalCommission: new Decimal(0),
+        netPayout: payoutAmount,
+        sessionCount: 0,
+        totalEnergyWh: 0,
+        status: "PAID",
+        paidAt: now,
+        paidByAdminId: adminId,
+        paymentRef: paymentRef || `PAYOUT-${Date.now()}`,
+        paymentMethod: paymentMethod || "Bank Transfer",
+        paymentNotes: paymentNotes || "Admin payout from wallet",
+      },
+    });
+
+    // 3. Create SettlementItem (placeholder entry for the payout)
+    await tx.settlementItem.create({
+      data: {
+        settlementId: settlement.id,
+        sessionId: 0, // Placeholder — no specific session tied
+        transactionId: 0,
+        energyWh: 0,
+        grossAmount: payoutAmount,
+        commission: new Decimal(0),
+        netAmount: payoutAmount,
+        sessionDate: now,
+      },
+    });
+
+    // 4. Create Ledger entry (SETTLEMENT_PAYOUT)
+    await createLedgerEntry(
+      {
+        userId: ownerId,
+        type: "SETTLEMENT_PAYOUT",
+        amount: payoutAmount.toFixed(2),
+        balanceAfter: newBalance.toFixed(2),
+        referenceId: settlement.id,
+        referenceType: "SETTLEMENT",
+        description: `Payout via ${paymentMethod || "Bank Transfer"} - ${paymentRef || "N/A"}`,
+        idempotencyKey: `payout_${settlement.id}`,
+        metadata: {
+          settlementId: settlement.id,
+          payoutAmount: payoutAmount.toFixed(2),
+          paymentRef,
+          paymentMethod,
+          paidByAdminId: adminId,
+          walletBalanceBefore: currentBalance.toFixed(2),
+          walletBalanceAfter: newBalance.toFixed(2),
+        },
+      },
+      tx
+    );
+
+    // 5. Create AdminAuditLog entry
+    await tx.adminAuditLog.create({
+      data: {
+        adminId,
+        action: "PROCESS_OWNER_PAYOUT",
+        targetType: "SETTLEMENT",
+        targetId: settlement.id,
+        previousValue: {
+          walletBalance: currentBalance.toFixed(2),
+        },
+        newValue: {
+          payoutAmount: payoutAmount.toFixed(2),
+          walletBalanceAfter: newBalance.toFixed(2),
+          paymentRef,
+          paymentMethod,
+          settlementId: settlement.id,
+        },
+      },
+    });
+
+    return {
+      settlement,
+      walletBalanceBefore: currentBalance.toFixed(2),
+      walletBalanceAfter: newBalance.toFixed(2),
+    };
+  });
+
+  console.log(
+    `[PAYOUT] Processed payout of LKR ${payoutAmount.toFixed(2)} for owner ${ownerId}. ` +
+    `Wallet: ${result.walletBalanceBefore} → ${result.walletBalanceAfter}`
+  );
+
+  return result;
+}
+
+/**
+ * Get payout summary for all owners
+ * 
+ * Returns each owner with:
+ * - All-Time Earnings (sum of all ownerEarning from sessions)
+ * - Total Paid Out (sum of all PAID settlements)
+ * - Pending Payout (current wallet balance)
+ * - Recent payout history
+ * 
+ * @returns {Promise<object[]>}
+ */
+export async function getAllOwnersPayoutSummary() {
+  const owners = await prisma.user.findMany({
+    where: { role: "OWNER" },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      isActive: true,
+    },
+  });
+
+  const summaries = await Promise.all(
+    owners.map(async (owner) => {
+      try {
+        // All-time earnings from sessions
+        const sessionsAgg = await prisma.chargingSession.aggregate({
+          where: {
+            charger: { station: { ownerId: owner.id } },
+            endedAt: { not: null },
+          },
+          _sum: {
+            ownerEarning: true,
+            commission: true,
+            totalCost: true,
+            energyUsedWh: true,
+          },
+          _count: { id: true },
+        });
+
+        // Total paid out from settlements
+        const paidSettlements = await prisma.settlement.aggregate({
+          where: {
+            ownerId: owner.id,
+            status: "PAID",
+          },
+          _sum: { netPayout: true },
+          _count: { id: true },
+        });
+
+        // Get wallet balance (pending payout)
+        const wallet = await prisma.wallet.findUnique({
+          where: { userId: owner.id },
+        });
+
+        const allTimeEarnings = new Decimal(sessionsAgg._sum.ownerEarning?.toString() || "0");
+        const totalPaidOut = new Decimal(paidSettlements._sum.netPayout?.toString() || "0");
+        const walletBalance = wallet ? new Decimal(wallet.balance.toString()) : new Decimal(0);
+
+        return {
+          ...owner,
+          allTimeEarnings: allTimeEarnings.toFixed(2),
+          totalCommission: sessionsAgg._sum.commission?.toString() || "0.00",
+          totalRevenue: sessionsAgg._sum.totalCost?.toString() || "0.00",
+          totalPaidOut: totalPaidOut.toFixed(2),
+          pendingPayout: walletBalance.toFixed(2),
+          totalSessions: sessionsAgg._count.id,
+          totalEnergyKwh: ((sessionsAgg._sum.energyUsedWh || 0) / 1000).toFixed(2),
+          payoutCount: paidSettlements._count.id,
+        };
+      } catch (error) {
+        console.error(`Error loading payout summary for owner ${owner.id}:`, error);
+        return {
+          ...owner,
+          allTimeEarnings: "0.00",
+          totalCommission: "0.00",
+          totalRevenue: "0.00",
+          totalPaidOut: "0.00",
+          pendingPayout: "0.00",
+          totalSessions: 0,
+          totalEnergyKwh: "0.00",
+          payoutCount: 0,
+        };
+      }
+    })
+  );
+
+  return summaries;
+}
+
+/**
+ * Get detailed payout data for a specific owner
+ * 
+ * @param {string} ownerId
+ * @returns {Promise<object>}
+ */
+export async function getOwnerPayoutDetail(ownerId) {
+  const owner = await prisma.user.findUnique({
+    where: { id: ownerId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      isActive: true,
+    },
+  });
+
+  if (!owner || !owner.id) {
+    throw new Error("Owner not found");
+  }
+
+  // All-time earnings
+  const sessionsAgg = await prisma.chargingSession.aggregate({
+    where: {
+      charger: { station: { ownerId } },
+      endedAt: { not: null },
+    },
+    _sum: {
+      ownerEarning: true,
+      commission: true,
+      totalCost: true,
+      energyUsedWh: true,
+    },
+    _count: { id: true },
+  });
+
+  // Total paid out
+  const paidSettlements = await prisma.settlement.findMany({
+    where: {
+      ownerId,
+      status: "PAID",
+    },
+    orderBy: { paidAt: "desc" },
+    select: {
+      id: true,
+      netPayout: true,
+      paidAt: true,
+      paymentRef: true,
+      paymentMethod: true,
+      paymentNotes: true,
+      sessionCount: true,
+      createdAt: true,
+    },
+  });
+
+  let totalPaidOut = new Decimal(0);
+  const payoutHistory = paidSettlements.map((s) => {
+    totalPaidOut = totalPaidOut.plus(new Decimal(s.netPayout.toString()));
+    return {
+      ...s,
+      netPayout: s.netPayout.toString(),
+      type: s.sessionCount === 0 ? "MANUAL" : "BATCH",
+    };
+  });
+
+  // Wallet balance
+  const wallet = await prisma.wallet.findUnique({
+    where: { userId: ownerId },
+  });
+
+  const allTimeEarnings = new Decimal(sessionsAgg._sum.ownerEarning?.toString() || "0");
+  const walletBalance = wallet ? new Decimal(wallet.balance.toString()) : new Decimal(0);
+
+  // Recent ledger entries for this owner (SETTLEMENT_PAYOUT + OWNER_EARNING)
+  const recentLedger = await prisma.ledger.findMany({
+    where: {
+      userId: ownerId,
+      type: { in: ["SETTLEMENT_PAYOUT", "OWNER_EARNING"] },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  return {
+    owner,
+    summary: {
+      allTimeEarnings: allTimeEarnings.toFixed(2),
+      totalCommission: sessionsAgg._sum.commission?.toString() || "0.00",
+      totalRevenue: sessionsAgg._sum.totalCost?.toString() || "0.00",
+      totalPaidOut: totalPaidOut.toFixed(2),
+      pendingPayout: walletBalance.toFixed(2),
+      totalSessions: sessionsAgg._count.id,
+      totalEnergyKwh: ((sessionsAgg._sum.energyUsedWh || 0) / 1000).toFixed(2),
+    },
+    payoutHistory,
+    recentLedger: recentLedger.map((l) => ({
+      ...l,
+      amount: l.amount.toString(),
+      balanceAfter: l.balanceAfter.toString(),
+    })),
+  };
 }
 
 export default {
@@ -982,5 +1343,8 @@ export default {
   reverseOwnerPayment,
   deleteSettlement,
   getOwnerPaymentHistory,
+  processOwnerPayout,
+  getAllOwnersPayoutSummary,
+  getOwnerPayoutDetail,
 };
 

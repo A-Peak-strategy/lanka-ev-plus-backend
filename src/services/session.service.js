@@ -33,6 +33,12 @@ export async function createSession(data) {
     timestamp,
     pricePerKwh,
     presetAmount,
+    pricingMode,
+    basePricePerKwh,
+    lockedPricePerKwh,
+    membershipDiscountRate,
+    clientVersion,
+    clientPlatform,
   } = data;
 
   // Idempotency check - prevent duplicate session creation
@@ -111,6 +117,14 @@ export async function createSession(data) {
       meterStartWh: meterStart || 0,
       startedAt: timestamp ? new Date(timestamp) : new Date(),
       pricePerKwh: pricePerKwh ? new Decimal(pricePerKwh).toFixed(2) : null,
+      pricingMode: pricingMode || null,
+      basePricePerKwh: basePricePerKwh ? new Decimal(basePricePerKwh).toFixed(2) : null,
+      lockedPricePerKwh: lockedPricePerKwh ? new Decimal(lockedPricePerKwh).toFixed(2) : null,
+      membershipDiscountRate: membershipDiscountRate != null
+        ? new Decimal(membershipDiscountRate).toFixed(2)
+        : null,
+      clientVersion: clientVersion || null,
+      clientPlatform: clientPlatform || null,
       presetAmount: presetAmount ? new Decimal(presetAmount).toFixed(2) : null,
       lastBilledWh: meterStart || 0,
       status: "PENDING",
@@ -338,6 +352,7 @@ export async function getActiveSessionsForUser(userId) {
         include: {
           station: {
             select: {
+              id: true,
               name: true,
               address: true,
             },
@@ -420,7 +435,9 @@ export async function handleOfflineReplay(data, type) {
 
 /**
  * Get session statistics for a user
- * 
+ *
+ * Uses DB-level aggregation to avoid loading all sessions into memory.
+ *
  * @param {string} userId
  * @param {object} options
  * @returns {Promise<object>}
@@ -435,30 +452,30 @@ export async function getUserSessionStats(userId, options = {}) {
     if (endDate) where.startedAt.lte = new Date(endDate);
   }
 
-  const sessions = await prisma.chargingSession.findMany({
-    where,
-    select: {
-      energyUsedWh: true,
-      totalCost: true,
-      startedAt: true,
-      endedAt: true,
-    },
-  });
+  // Single DB aggregate — avoids loading all rows into Node.js memory
+  const [agg, completedCount] = await Promise.all([
+    prisma.chargingSession.aggregate({
+      where,
+      _sum: {
+        energyUsedWh: true,
+        totalCost: true,
+      },
+      _count: { id: true },
+    }),
+    prisma.chargingSession.count({
+      where: { ...where, endedAt: { not: null } },
+    }),
+  ]);
 
-  const totalEnergy = sessions.reduce((sum, s) => sum + (s.energyUsedWh || 0), 0);
-  const totalCost = sessions.reduce(
-    (sum, s) => sum.plus(new Decimal(s.totalCost?.toString() || "0")),
-    new Decimal(0)
-  );
-  const totalSessions = sessions.length;
-  const completedSessions = sessions.filter((s) => s.endedAt).length;
+  const totalEnergy = agg._sum.energyUsedWh || 0;
+  const totalCost = new Decimal(agg._sum.totalCost?.toString() || "0");
 
   return {
     totalEnergy,
     totalEnergyKwh: (totalEnergy / 1000).toFixed(2),
     totalCost: totalCost.toFixed(2),
-    totalSessions,
-    completedSessions,
+    totalSessions: agg._count.id,
+    completedSessions: completedCount,
   };
 }
 

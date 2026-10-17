@@ -104,7 +104,7 @@ export async function remoteStartTransaction(chargerId, options) {
  * @returns {Promise<object>}
  */
 export async function startChargingForUser(params) {
-  const { chargerId, userId, connectorId = 1, presetAmount } = params;
+  const { chargerId, userId, connectorId = 1, presetAmount, clientCompatibility = null } = params;
 
   // OCPP 1.6 CiString20Type: idTag max 20 characters
   // User IDs (CUIDs) can be ~25 chars, so truncate for OCPP compliance.
@@ -120,6 +120,7 @@ export async function startChargingForUser(params) {
     ...currentState,
     pendingUserId: userId,
     pendingPresetAmount: presetAmount || null,
+    pendingClientCompatibility: clientCompatibility,
   });
 
   console.log(`[CMD] Stored pendingUserId for ${chargerId}: ${userId}${presetAmount ? `, presetAmount: LKR ${presetAmount}` : ''}`);
@@ -165,6 +166,7 @@ export function clearPendingStartState(chargerId, connectorId) {
     ...currentState,
     pendingUserId: null,
     pendingPresetAmount: null,
+    pendingClientCompatibility: null,
   };
 
   chargersStore.set(key, nextState);

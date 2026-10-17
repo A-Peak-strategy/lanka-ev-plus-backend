@@ -28,6 +28,16 @@ export async function verifyToken(req, res, next) {
     // Verify Firebase token
     const decodedToken = await admin.auth().verifyIdToken(token);
 
+    // Email/password identities must complete server-side OTP verification
+    // before they can access or provision application resources.
+    if (decodedToken.email && decodedToken.email_verified !== true) {
+      return res.status(403).json({
+        success: false,
+        message: "Email verification required",
+        code: "EMAIL_NOT_VERIFIED",
+      });
+    }
+
     // Get or create user in database
     let user = await prisma.user.findUnique({
       where: { firebaseUid: decodedToken.uid },
@@ -136,6 +146,30 @@ export async function verifyToken(req, res, next) {
       success: false,
       error: "Invalid token",
     });
+  }
+}
+
+/**
+ * Verify a Firebase ID token without provisioning an application user.
+ * Used by pre-registration endpoints such as email OTP verification.
+ */
+export async function verifyFirebaseToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).json({ success: false, message: "Authentication required" });
+    }
+
+    const token = authHeader.slice(7).trim();
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Authentication required" });
+    }
+
+    req.firebaseUser = await admin.auth().verifyIdToken(token);
+    return next();
+  } catch (error) {
+    const message = error.code === "auth/id-token-expired" ? "Session expired" : "Invalid authentication token";
+    return res.status(401).json({ success: false, message });
   }
 }
 
@@ -277,6 +311,7 @@ export function requireOwnership(req, res, next) {
 
 export default {
   verifyToken,
+  verifyFirebaseToken,
   optionalAuth,
   requireAdmin,
   requireOwnerOrAdmin,

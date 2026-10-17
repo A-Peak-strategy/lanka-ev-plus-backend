@@ -8,6 +8,9 @@ import ledgerService, {
 } from "./ledger.service.js";
 import { startGracePeriod, cancelGracePeriod } from "./gracePeriod.service.js";
 import notificationService from "./notification.service.js";
+import { getCurrentPricingTier } from "../utils/timeUtils.js";
+import stationMembershipService from "./stationMembership.service.js";
+import { resolveSessionMeterPrice } from "./sessionPricing.service.js";
 
 // Configure Decimal.js
 Decimal.set({ precision: 20, rounding: Decimal.ROUND_HALF_UP });
@@ -56,7 +59,11 @@ export async function getPricingForCharger(chargerId) {
     return await prisma.pricing.create({
       data: {
         name: "Default Pricing",
-        pricePerKwh: 50.0, // LKR 50 per kWh
+        pricePerKwh: 50.0, // LKR 50 per kWh fallback
+        isTouEnabled: true,
+        peakPrice: 70.0,
+        dayPrice: 15.0,
+        offPeakPrice: 31.0,
         commissionRate: 2.0, // 2% commission per SRS
         gracePeriodSec: 60, // 60 seconds
         lowBalanceThreshold: 300.0, // LKR 300 - warning notification
@@ -158,7 +165,14 @@ export async function processMeterValuesBilling({
     }
 
     const pricing = await getPricingForCharger(chargerId);
-    const pricePerKwh = new Decimal(pricing.pricePerKwh.toString());
+    let currentPriceStr = pricing.pricePerKwh.toString();
+    if (pricing.isTouEnabled) {
+      const tier = getCurrentPricingTier();
+      if (tier === 'PEAK' && pricing.peakPrice) currentPriceStr = pricing.peakPrice.toString();
+      else if (tier === 'DAY' && pricing.dayPrice) currentPriceStr = pricing.dayPrice.toString();
+      else if (tier === 'OFF_PEAK' && pricing.offPeakPrice) currentPriceStr = pricing.offPeakPrice.toString();
+    }
+    const pricePerKwh = new Decimal(currentPriceStr);
     const incrementalCost = calculateEnergyCost(incrementalWh, pricePerKwh);
 
     const totalEnergyUsed = currentMeterWh - (session.meterStartWh || 0);
@@ -186,7 +200,25 @@ export async function processMeterValuesBilling({
 
   // Get pricing
   const pricing = await getPricingForCharger(chargerId);
-  const pricePerKwh = new Decimal(pricing.pricePerKwh.toString());
+  // Pre-rollout sessions have a null mode and keep the former dynamic
+  // membership behaviour. New sessions use their immutable snapshot, which
+  // avoids a membership query on every MeterValues message.
+  let legacyMembershipDiscountRate = "0";
+  if (session.pricingMode == null) {
+    const membership = await stationMembershipService.getActiveMembershipForCharging(
+      session.userId,
+      chargerId
+    );
+    legacyMembershipDiscountRate = membership?.discountRate?.toString() || "0";
+  }
+  const resolvedRate = resolveSessionMeterPrice({
+    session,
+    pricing,
+    legacyMembershipDiscountRate,
+  });
+  const basePricePerKwh = resolvedRate.basePricePerKwh;
+  const membershipDiscountRate = resolvedRate.membershipDiscountRate;
+  const pricePerKwh = resolvedRate.pricePerKwh;
   const commissionRate = new Decimal(pricing.commissionRate.toString());
 
   // Calculate cost for incremental energy
@@ -341,6 +373,8 @@ export async function processMeterValuesBilling({
     newBalance: deductResult.newBalance,
     totalCost: newTotalCost.toFixed(2),
     split,
+    basePricePerKwh: basePricePerKwh.toFixed(2),
+    membershipDiscountRate: membershipDiscountRate.toFixed(2),
   };
 }
 
@@ -469,7 +503,12 @@ export async function finalizeSessionBilling(transactionId) {
     const chargerId = session.chargerId || 'Unknown';
     const energyKwh = ((session.energyUsedWh || 0) / 1000).toFixed(2);
     const pricing = session.charger?.station?.pricing;
-    const pricePerKwh = pricing ? pricing.pricePerKwh.toString() : '?';
+    const basePricePerKwh = pricing ? pricing.pricePerKwh.toString() : '?';
+    // Accurate across multiple TOU tiers and includes the membership discount.
+    const effectivePricePerKwh = session.energyUsedWh > 0
+      ? totalCost.dividedBy(new Decimal(session.energyUsedWh).dividedBy(1000)).toFixed(2)
+      : "0.00";
+    const pricePerKwh = effectivePricePerKwh;
 
     // Calculate duration
     const startTime = session.startedAt || session.createdAt;
@@ -505,6 +544,8 @@ export async function finalizeSessionBilling(transactionId) {
             energyUsedWh: session.energyUsedWh,
             energyKwh,
             pricePerKwh,
+            basePricePerKwh,
+            effectivePricePerKwh,
             durationMins,
             totalCost: totalCost.toFixed(2),
           },

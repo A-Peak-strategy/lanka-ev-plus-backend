@@ -426,14 +426,17 @@ export async function getTransactionHistory(userId, options = {}) {
     where.type = type;
   }
 
-  const entries = await prisma.ledger.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    skip: offset,
-  });
+  const [data, total] = await Promise.all([
+    prisma.ledger.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.ledger.count({ where }),
+  ]);
 
-  return entries;
+  return { data, total };
 }
 
 /**

@@ -14,7 +14,10 @@ export function errorHandler(err, req, res, next) {
   // Default error values
   let statusCode = err.statusCode || 500;
   let errorCode = err.errorCode || "INTERNAL_ERROR";
-  let message = err.message || "An unexpected error occurred";
+  // Never expose raw framework, database, or upstream errors to the mobile app.
+  let message = isOperationalError(err)
+    ? (err.message || "We could not complete your request. Please try again.")
+    : "We could not complete your request. Please try again.";
 
   // Log error
   logError(err, req);
@@ -41,7 +44,7 @@ export function errorHandler(err, req, res, next) {
     // Prisma record not found
     statusCode = 404;
     errorCode = "NOT_FOUND";
-    message = err.meta?.cause || "Record not found";
+    message = "Requested record was not found";
   }
 
   if (err.code === "P2003") {
@@ -67,6 +70,8 @@ export function errorHandler(err, req, res, next) {
   const response = {
     success: false,
     errorCode,
+    // Some released app versions read `code`; keep both names during rollout.
+    code: errorCode,
     message,
   };
 
@@ -92,7 +97,9 @@ export function notFoundHandler(req, res) {
   res.status(404).json({
     success: false,
     errorCode: "ENDPOINT_NOT_FOUND",
-    message: `Cannot ${req.method} ${req.originalUrl}`,
+    code: "ENDPOINT_NOT_FOUND",
+    message: "This feature is temporarily unavailable. Please update the app and try again.",
+    ...(req.id ? { requestId: req.id } : {}),
   });
 }
 

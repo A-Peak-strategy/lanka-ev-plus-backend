@@ -159,7 +159,10 @@ export async function topUpWallet(req, res) {
     res.status(500).json({
       success: false,
       error: "Failed to initiate payment",
-      message: error.message
+      errorCode: "PAYMENT_INITIATION_FAILED",
+      code: "PAYMENT_INITIATION_FAILED",
+      message: "We could not start the top-up. Please try again.",
+      ...(req.id ? { requestId: req.id } : {}),
     });
   }
 }
@@ -182,11 +185,15 @@ export async function getTransactions(req, res) {
     if (!userId) {
       throw new AuthenticationError("User authentication required");
     }
-    const { limit = 50, offset = 0, type } = req.query;
 
-    const transactions = await walletService.getTransactionHistory(userId, {
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+    const { limit = 50, offset = 0, type } = req.query;
+    console.log("Get transactions request body : ", JSON.stringify(req.query, null, 2));
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
+
+    const { data: transactions, total } = await walletService.getTransactionHistory(userId, {
+      limit: parsedLimit,
+      offset: parsedOffset,
       type,
     });
 
@@ -202,9 +209,11 @@ export async function getTransactions(req, res) {
         createdAt: t.createdAt,
       })),
       pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        hasMore: transactions.length === parseInt(limit),
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        totalPages: Math.ceil(total / parsedLimit),
+        hasMore: parsedOffset + transactions.length < total,
       },
     });
   } catch (error) {
@@ -498,7 +507,10 @@ export async function releaseChargingAmount(req, res) {
     res.status(500).json({
       success: false,
       error: "Failed to release charging amount",
-      message: error.message,
+      errorCode: "CHARGING_AMOUNT_RELEASE_FAILED",
+      code: "CHARGING_AMOUNT_RELEASE_FAILED",
+      message: "We could not update the charging amount. Please try again.",
+      ...(req.id ? { requestId: req.id } : {}),
     });
   }
 }
